@@ -16,6 +16,7 @@ An agent acts as a financial crime compliance investigator: it receives a transa
 
 ---
 
+<<<<<<< HEAD
 ## Problem Statement: Meta PyTorch Hackathon
 
 The **AML Investigation Environment** is a specialized reinforcement learning (RL) environment designed to bridge the gap between Large Language Models (LLMs) and real-world financial compliance tasks. We are building a "Flight Simulator" for financial investigators to see if AI agents can navigate complex data to catch money laundering accurately and efficiently.
@@ -49,6 +50,8 @@ Success is measured not just by the final decision, but by the **quality and eff
 
 ---
 
+=======
+>>>>>>> 10edb24 (chore: First iteration of OpenEnv AML Environment ready for submission~)
 ## Project Structure
 
 ```

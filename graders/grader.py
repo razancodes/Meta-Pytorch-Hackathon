@@ -123,7 +123,11 @@ class AMLGrader:
             efficiency = max(0.0, 1.0 - (step_count - optimal) / (MAX_STEPS - optimal))
         score += 0.15 * efficiency
 
+<<<<<<< HEAD
         return min(max(round(score, 4), 0.001), 0.999)
+=======
+        return min(max(round(score, 4), 0.0), 1.0)
+>>>>>>> 10edb24 (chore: First iteration of OpenEnv AML Environment ready for submission~)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
@@ -206,6 +210,13 @@ class AMLGrader:
         float — typically in [-0.05, +0.05]
         """
         if call_hash in state.tool_call_hashes:
+            # Redundant call — same tool + params seen before
+            return -0.02
+
+        # All unique tool calls yield a small positive reward
+        # (irrelevant tools penalised more)
+        return 0.05
+ate.tool_call_hashes:
             # Redundant call — same tool + params seen before
             return -0.02
 
