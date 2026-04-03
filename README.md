@@ -6,6 +6,39 @@ An agent acts as a financial crime compliance investigator: it receives a transa
 
 ---
 
+## Problem Statement: Meta PyTorch Hackathon
+
+The **AML Investigation Environment** is a specialized reinforcement learning (RL) environment designed to bridge the gap between Large Language Models (LLMs) and real-world financial compliance tasks. We are building a "Flight Simulator" for financial investigators to see if AI agents can navigate complex data to catch money laundering accurately and efficiently.
+
+### 1. The Core Objective: "Agent as Investigator"
+We are simulating a high-stakes environment where an AI agent takes on the role of a **Financial Crime Compliance Investigator**.
+*   **The Input:** A "Transaction Monitoring Alert"—a piece of potentially suspicious financial activity flagged by an automated system.
+*   **The Task:** The agent must perform a multi-step investigation using structured tools to gather evidence.
+*   **The Decision:** The agent must eventually choose one of two terminal actions: `file_sar` (if suspicious) or `close_alert` (if legitimate).
+
+### 2. The Technical Problem: Tool-Use & Reasoning
+This project tests an agent's ability for **sequential decision-making** and **contextual tool use**. 
+*   **Standardization:** All investigation tools (KYC lookups, transaction queries, watchlist screening, and network tracing) are exposed via an OpenEnv-compatible HTTP API.
+*   **Justification:** The agent is required to provide **structured evidence** (findings, typologies, and involved entities) to justify its final decision.
+
+### 3. Specific Investigation Scenarios
+The environment includes three distinct levels of difficulty, testing different money laundering typologies:
+
+| Level | Problem Type | Objective |
+| :--- | :--- | :--- |
+| **Easy** | **Structuring** | Identifying patterns of cash deposits just below the \$10,000 reporting threshold (e.g., "smurfing"). |
+| **Medium** | **Layering** | Tracing funds fanning out through multiple shell companies to obscure their origin. |
+| **Hard** | **Trade-Based ML** | Detecting price manipulation (over/under-invoicing) in international trade to move value across borders. |
+
+### 4. Success Metrics (Grading Schema)
+Success is measured not just by the final decision, but by the **quality and efficiency of the investigation**:
+*   **Precision/Recall:** Accuracy in identifying specific involved entities.
+*   **Typology Accuracy:** Correct identification of the specific fraud mechanism.
+*   **Efficiency:** Solving the case in the fewest possible steps without redundant tool calls.
+*   **Evidence Coverage:** Finding critical flags (e.g., PEP status, shared addresses, or market price aberrations).
+
+---
+
 ## Project Structure
 
 ```
