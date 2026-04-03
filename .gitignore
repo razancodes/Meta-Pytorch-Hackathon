@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Packages
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# IDE and general files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets and authentication (CRITICAL for security)
+*.pem
+*.key
+.env.local
+.env.*
+secrets/
+.secret
+api_keys.json
+
+# Logs
+*.log
+server.log
+validate-curl-*
