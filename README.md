@@ -1,14 +1,3 @@
----
-title: AML Investigation Environment
-emoticon: 8-)
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-pinned: false
-tags:
-  - openenv
----
-
 # AML Investigation Environment
 
 An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation.
