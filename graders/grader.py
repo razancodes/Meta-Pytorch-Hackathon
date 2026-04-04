@@ -100,7 +100,7 @@ class AMLGrader:
             true_positives = len(flagged_set & gt_entities)
             false_negatives = len(gt_entities - flagged_set)
 
-            precision = true_positives / max(len(flagged_set) - false_positives + true_positives, 1)
+            precision = true_positives / max(true_positives + false_positives, 1)
             recall = true_positives / len(gt_entities)
             f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
             score += 0.15 * f1
