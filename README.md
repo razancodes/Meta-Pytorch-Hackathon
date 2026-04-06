@@ -1,4 +1,6 @@
-# AML Investigation Environment
+# AML Investigation Environment for Meta-PyTorch-Hackathon
+
+
 
 An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation.
 
