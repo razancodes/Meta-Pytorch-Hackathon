@@ -1,14 +1,26 @@
 ---
+<<<<<<< HEAD
 title: MetaHack
 emoji: 🏢
 colorFrom: blue
 colorTo: green
 sdk: docker
 app_port: 8000
+=======
+title: AML Investigation Environment
+emoticon: 8-)
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+tags:
+  - openenv
+>>>>>>> 89a73d4 (resolved merge conflict)
 ---
 # AML Investigation Environment for Meta-PyTorch-Hackathon
 
 
+# AML Investigation Environment
 
 An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation.
 
@@ -16,7 +28,6 @@ An agent acts as a financial crime compliance investigator: it receives a transa
 
 ---
 
-<<<<<<< HEAD
 ## Problem Statement: Meta PyTorch Hackathon
 
 The **AML Investigation Environment** is a specialized reinforcement learning (RL) environment designed to bridge the gap between Large Language Models (LLMs) and real-world financial compliance tasks. We are building a "Flight Simulator" for financial investigators to see if AI agents can navigate complex data to catch money laundering accurately and efficiently.
@@ -49,9 +60,6 @@ Success is measured not just by the final decision, but by the **quality and eff
 *   **Evidence Coverage:** Finding critical flags (e.g., PEP status, shared addresses, or market price aberrations).
 
 ---
-
-=======
->>>>>>> 10edb24 (chore: First iteration of OpenEnv AML Environment ready for submission~)
 ## Project Structure
 
 ```
