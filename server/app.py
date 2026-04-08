@@ -124,7 +124,7 @@ if not _openenv_available:
         return {"status": "ok", "env": "aml_investigation_env"}
 
     @app.post("/reset")
-    async def reset(request: ResetRequest):
+    async def reset(request: Optional[ResetRequest] = None):
         """
         Reset the environment for a new episode.
 
@@ -133,6 +133,8 @@ if not _openenv_available:
         - seed    : optional random seed
         - episode_id : optional custom episode ID
         """
+        if request is None:
+            request = ResetRequest()
         obs = _env.reset(
             seed=request.seed,
             episode_id=request.episode_id,
