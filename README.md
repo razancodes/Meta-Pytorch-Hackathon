@@ -1,3 +1,11 @@
+---
+title: MetaHack
+emoji: 🏢
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 8000
+---
 # AML Investigation Environment for Meta-PyTorch-Hackathon
 
 
