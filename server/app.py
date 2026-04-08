@@ -124,11 +124,7 @@ if not _openenv_available:
         return {"status": "ok", "env": "aml_investigation_env"}
 
     @app.post("/reset")
-<<<<<<< HEAD
     async def reset(request: Optional[ResetRequest] = None):
-=======
-    async def reset(request: ResetRequest):
->>>>>>> 10edb24 (chore: First iteration of OpenEnv AML Environment ready for submission~)
         """
         Reset the environment for a new episode.
 
