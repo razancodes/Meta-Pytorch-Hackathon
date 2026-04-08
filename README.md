@@ -1,26 +1,12 @@
 ---
-<<<<<<< HEAD
 title: MetaHack
 emoji: 🏢
 colorFrom: blue
 colorTo: green
 sdk: docker
 app_port: 8000
-=======
-title: AML Investigation Environment
-emoticon: 8-)
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-pinned: false
-tags:
-  - openenv
->>>>>>> 89a73d4 (resolved merge conflict)
 ---
 # AML Investigation Environment for Meta-PyTorch-Hackathon
-
-
-# AML Investigation Environment
 
 An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation.
 
