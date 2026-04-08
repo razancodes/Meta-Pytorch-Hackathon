@@ -4,3 +4,17 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
+
+models:
+  - name: "Qwen/Qwen2.5-72B-Instruct"
+
+tasks:
+  - id: "easy"
+    name: "Structuring"
+    description: "Identifying patterns of cash deposits just below the $10,000 reporting threshold (e.g., smurfing)."
+  - id: "medium"
+    name: "Layering"
+    description: "Tracing funds fanning out through multiple shell companies to obscure their origin."
+  - id: "hard"
+    name: "Trade-Based ML"
+    description: "Detecting price manipulation in international trade to move value across borders."
