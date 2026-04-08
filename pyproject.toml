@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aml_investigation_env"
+version = "0.1.0"
+description = "AML Investigation Environment for OpenEnv Hackathon"
+authors = [
+    {name = "AML Investigation Author", email = "author@example.com"},
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "httpx>=0.25.0",
+    "openai>=1.6.0",
+    "openenv-core>=0.2.0"
+]
+
+[project.scripts]
+server = "server.app:main"
+
