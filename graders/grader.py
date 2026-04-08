@@ -117,7 +117,7 @@ class AMLGrader:
             efficiency = max(0.0, 1.0 - (step_count - optimal) / (MAX_STEPS - optimal))
         score += 0.15 * efficiency
 
-        return min(max(round(score, 4), 0.0), 1.0)
+        return min(max(round(score, 4), 0.001), 0.999)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
