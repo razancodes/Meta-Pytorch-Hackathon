@@ -1,15 +1,11 @@
 ---
-title: AML Investigation Environment
-emoticon: 8-)
+title: MetaHack
+emoji: 🏢
 colorFrom: blue
-colorTo: indigo
+colorTo: green
 sdk: docker
-pinned: false
-tags:
-  - openenv
+app_port: 8000
 ---
-
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
 # AML Investigation Environment for Meta-PyTorch-Hackathon
 
 
