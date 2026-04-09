@@ -21,8 +21,8 @@ try:
     from scenarios import get_scenario
     from models import AMLState
 except ImportError:
-    from .scenarios import get_scenario
-    from .models import AMLState
+    from aml_investigation_env.scenarios import get_scenario
+    from aml_investigation_env.models import AMLState
 
 
 # ---- Per-task optimal step counts (used for efficiency scoring) --------
@@ -36,7 +36,25 @@ MAX_STEPS = 25
 
 
 class AMLGrader:
-    """Scores a completed AML investigation episode."""
+    """Deterministic scoring engine for completed AML investigation episodes.
+
+    Implements a weighted rubric that evaluates five orthogonal dimensions of
+    investigative quality: decision accuracy, typology identification, evidence
+    coverage, entity-level precision/recall, and step efficiency. This design
+    intentionally avoids LLM-as-judge approaches to ensure reproducible,
+    auditable benchmarking across model comparisons.
+
+    Scoring Philosophy:
+        The rubric weights reflect real-world compliance priorities. Decision
+        correctness (0.30) dominates because a wrong SAR/close decision is the
+        costliest failure mode. Evidence coverage (0.25) rewards thorough
+        investigation. The remaining weight is split across typology accuracy,
+        entity identification (F1), and operational efficiency.
+
+    Attributes:
+        OPTIMAL_STEPS: Per-task minimum step counts representing an ideal
+            investigation path, used as the baseline for efficiency scoring.
+    """
 
     def grade(
         self,
@@ -47,21 +65,35 @@ class AMLGrader:
         typology: str,
         state: AMLState,
     ) -> float:
-        """
-        Compute a [0.0, 1.0] score for the episode.
+        """Compute a composite score in [0.001, 0.999] for a completed episode.
 
-        Parameters
-        ----------
-        task_id        : one of 'easy', 'medium', 'hard'
-        decision       : 'file_sar' or 'close_alert'
-        findings       : list of finding strings the agent reported
-        entities_flagged: list of entity IDs the agent flagged
-        typology       : typology string the agent stated
-        state          : AMLState at episode end
+        Evaluates the agent's terminal action against the scenario's ground truth
+        across five weighted dimensions. Each component is independently scored
+        and summed, producing a transparent, decomposable final score. The result
+        is clamped to (0.001, 0.999) to avoid degenerate log-probability issues
+        in downstream RL training loops.
 
-        Returns
-        -------
-        float in [0.0, 1.0]
+        Args:
+            task_id: Scenario identifier ('easy', 'medium', or 'hard').
+            decision: The agent's terminal action ('file_sar' or 'close_alert').
+            findings: Free-text finding strings submitted by the agent, matched
+                against ground truth via keyword overlap and semantic aliasing.
+            entities_flagged: Entity IDs the agent identified as involved in the
+                suspicious activity. Scored via precision/recall F1.
+            typology: The money laundering typology the agent reported
+                (e.g., 'structuring', 'layering', 'trade_based_ml').
+            state: The terminal ``AMLState`` snapshot, used for step-count
+                efficiency scoring.
+
+        Returns:
+            A float in [0.001, 0.999] representing the composite episode score.
+
+        Scoring Breakdown:
+            - Decision correctness (0.30): Binary — did the agent file/close correctly?
+            - Typology correctness (0.15): Case-insensitive exact match.
+            - Key findings coverage (0.25): Proportional to ground-truth findings matched.
+            - Entity precision/recall F1 (0.15): Penalizes both missed and falsely flagged entities.
+            - Efficiency (0.15): Linear decay from optimal step count to MAX_STEPS.
         """
         scenario = get_scenario(task_id)
         gt = scenario.ground_truth
@@ -124,15 +156,31 @@ class AMLGrader:
     # ------------------------------------------------------------------ #
 
     def _count_findings_matched(self, agent_findings: List[str], gt_findings: List[str]) -> int:
-        """
-        Count how many ground-truth findings appear in the agent's findings.
+        """Count ground-truth findings matched by the agent's reported findings.
 
-        Uses a two-tier matching strategy:
-        1. Direct keyword overlap (≥50% of significant GT keywords present in any agent finding)
-        2. Semantic alias matching via a small synonym map
+        Implements a three-tier fuzzy matching strategy designed to be robust to
+        the natural language variability of LLM outputs while remaining strict
+        enough to prevent credit for unrelated findings:
 
-        This balances strictness (agent must find the right thing) with flexibility
-        (different phrasing is OK).
+        Matching Tiers (evaluated in order, first match wins):
+            1. **Keyword Overlap**: Tokenizes the ground-truth finding into
+               significant keywords (len > 2) and checks if ≥50% appear in any
+               single agent finding. This handles rephrasing (e.g., "sub_threshold"
+               vs "deposits_below_threshold").
+            2. **Semantic Alias Table**: A curated synonym map covers common
+               domain-specific rephrasings (e.g., "no_source_documentation" ↔
+               "undocumented", "no_business_justification"). Aliases are checked
+               against the concatenated agent findings string.
+            3. **Substring Fallback**: Any individual ground-truth keyword
+               appearing anywhere in the joined agent findings triggers a match.
+               This is the most permissive tier and acts as a safety net.
+
+        Args:
+            agent_findings: Normalized finding strings from the agent's terminal action.
+            gt_findings: Ground-truth finding keys from the scenario definition.
+
+        Returns:
+            The count of ground-truth findings successfully matched (0 to len(gt_findings)).
         """
         # Common aliases so slight phrasing differences still match
         ALIASES = {

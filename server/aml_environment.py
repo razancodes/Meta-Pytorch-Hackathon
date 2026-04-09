@@ -110,8 +110,35 @@ class AMLEnvironment(Environment):
         timeout_s: Optional[float] = None,
         **kwargs: Any,
     ) -> AMLObservation:
-        """
-        Execute a tool action and return the resulting observation.
+        """Execute a single investigation action and advance the environment state.
+
+        Implements the core action-routing pipeline of the RL environment. Each
+        call progresses through four stages:
+
+        Pipeline Stages:
+            1. **Guard Checks**: Validates that the environment has been reset and
+               the episode has not already terminated. Enforces the MAX_STEPS budget
+               with a penalty reward if exceeded.
+            2. **Redundancy Detection**: Computes a stable MD5 hash of (tool, params)
+               and checks it against previously seen call hashes. Redundant calls
+               receive a -0.02 penalty; unique calls earn +0.05.
+            3. **Tool Dispatch**: Routes the action to the appropriate scenario-aware
+               handler (one of 9 domain tools) via a handler map. Each handler reads
+               from the scenario's data layer and updates evidence-tracking flags on
+               the AMLState.
+            4. **Terminal Grading**: If the action is terminal (``file_sar`` or
+               ``close_alert``), invokes the deterministic ``AMLGrader`` to compute
+               the composite final score and ends the episode.
+
+        Args:
+            action: The agent's tool call, containing a tool name and parameters dict.
+            timeout_s: Optional per-step timeout (reserved for future use).
+            **kwargs: Additional keyword arguments (forwarded for OpenEnv compatibility).
+
+        Returns:
+            An ``AMLObservation`` containing the tool result payload, updated list
+            of available tools, a human-readable message, the step reward, and a
+            done flag indicating whether the episode has terminated.
         """
         if self._current_scenario is None:
             return AMLObservation(
