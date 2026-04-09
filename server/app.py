@@ -50,12 +50,8 @@ _openenv_available = False
 try:
     from openenv.core.env_server.http_server import create_app  # type: ignore
 
-<<<<<<< HEAD
     _global_env_for_openenv = AMLEnvironment()
     app = create_app(lambda: _global_env_for_openenv, AMLAction, AMLObservation, env_name="aml_investigation_env")
-=======
-    app = create_app(AMLEnvironment, AMLAction, AMLObservation, env_name="aml_investigation_env")
->>>>>>> 10edb24 (chore: First iteration of OpenEnv AML Environment ready for submission~)
     _openenv_available = True
 except ImportError:
     pass
@@ -129,7 +125,7 @@ if not _openenv_available:
         return {"status": "ok", "env": "aml_investigation_env"}
 
     @app.post("/reset")
-    async def reset(request: Optional[ResetRequest] = None):
+    async def reset(request: ResetRequest):
         """
         Reset the environment for a new episode.
 
@@ -138,8 +134,6 @@ if not _openenv_available:
         - seed    : optional random seed
         - episode_id : optional custom episode ID
         """
-        if request is None:
-            request = ResetRequest()
         obs = _env.reset(
             seed=request.seed,
             episode_id=request.episode_id,
