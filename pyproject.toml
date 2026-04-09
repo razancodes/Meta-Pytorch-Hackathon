@@ -21,3 +21,14 @@ dependencies = [
 [project.scripts]
 server = "server.app:main"
 
+[tool.hatch.build.targets.wheel]
+packages = [
+    "server",
+    "scenarios",
+    "graders",
+    "models.py",
+    "client.py",
+    "inference.py"
+]
+
+

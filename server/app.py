@@ -50,7 +50,8 @@ _openenv_available = False
 try:
     from openenv.core.env_server.http_server import create_app  # type: ignore
 
-    app = create_app(AMLEnvironment, AMLAction, AMLObservation, env_name="aml_investigation_env")
+    _global_env_for_openenv = AMLEnvironment()
+    app = create_app(lambda: _global_env_for_openenv, AMLAction, AMLObservation, env_name="aml_investigation_env")
     _openenv_available = True
 except ImportError:
     pass
