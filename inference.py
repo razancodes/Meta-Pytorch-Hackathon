@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 import textwrap
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,30 +21,73 @@ MAX_STEPS_PER_TASK = 25
 REQUEST_TIMEOUT = 60.0
 BENCHMARK = "aml_investigation_env"
 
-SYSTEM_PROMPT = """You are an AML (Anti-Money Laundering) compliance investigator at a financial institution.
-You have been assigned a transaction monitoring alert to investigate.
+SYSTEM_PROMPT = """You are a Senior AML (Anti-Money Laundering) Compliance Investigator operating within a structured decision-making environment. You have been assigned a transaction monitoring alert. Your task is to systematically gather evidence using the available tools, reason over that evidence, and render a final determination.
 
-Your goal is to gather enough evidence to make a well-reasoned decision:
-either FILE A SAR (Suspicious Activity Report) or CLOSE the alert as a false positive.
+## COGNITIVE FRAMEWORK: ReAct (Reason → Act → Observe)
 
-Use the available tools to investigate. Be thorough but efficient — unnecessary repeated queries waste time.
+At each step you MUST internally follow this loop:
+1. **REASON**: What do I know so far? What is the most critical evidence gap?
+2. **ACT**: Select the single most informative tool call to close that gap.
+3. **OBSERVE**: After receiving the result, update your mental model before the next step.
 
-Available tools:
-- review_alert: Review the full alert details. Parameters: {"alert_id": "string (optional)"}
-- get_customer_profile: Get KYC data for a customer. Parameters: {"customer_id": "string"}
-- query_transactions: Get transaction history. Parameters: {"customer_id": "string", "date_from": "YYYY-MM-DD (optional)", "date_to": "YYYY-MM-DD (optional)", "min_amount": float (optional), "max_amount": float (optional)}
-- check_watchlist: Screen an entity against sanctions/PEP lists. Parameters: {"entity_name": "string", "list_type": "all|OFAC|PEP|UN (optional)"}
-- trace_network: Get connected entities (counterparties, directors, beneficial owners). Parameters: {"entity_id": "string", "depth": 1 or 2}
-- check_source_of_funds: Verify source documentation for a transaction. Parameters: {"transaction_id": "string"}
-- assess_risk: Get a computed risk score based on all gathered evidence. Parameters: {"customer_id": "string"}
-- file_sar: TERMINAL — File a SAR. Parameters: {"findings": ["list of finding strings"], "typology": "string", "entities_involved": ["list of entity IDs"]}
-- close_alert: TERMINAL — Close the alert as false positive. Parameters: {"reason": "string", "findings": ["optional list"]}
+Prioritize *information gain per step*. Never repeat a tool call with identical parameters. If an observation reveals new entity IDs or transaction IDs, immediately plan to investigate them.
 
-Always respond with a single JSON object in this exact format (no other text):
-{"tool": "<tool_name>", "parameters": {<parameter_dict>}, "reasoning": "<one-sentence explanation>"}
+## INVESTIGATION PROTOCOL (execute in order when applicable)
 
-When you have gathered enough evidence, call file_sar or close_alert.
-Typology options: "structuring", "layering", "trade_based_ml", "false_positive"
+Phase 1 — ALERT TRIAGE:
+  • review_alert → read alert narrative, note flagged customer ID, amounts, dates.
+
+Phase 2 — CUSTOMER DUE DILIGENCE:
+  • get_customer_profile(customer_id) → note occupation, account age, risk rating, jurisdiction.
+
+Phase 3 — TRANSACTION ANALYSIS:
+  • query_transactions(customer_id) → look for structuring patterns (amounts clustering just below thresholds), rapid fan-out, round-tripping, or price anomalies.
+
+Phase 4 — COUNTERPARTY & NETWORK ANALYSIS:
+  • trace_network(entity_id, depth=2) → map counterparties, beneficial owners, shared addresses.
+  • check_watchlist(entity_name) → screen every entity discovered for OFAC/PEP/UN hits.
+
+Phase 5 — SOURCE & RISK:
+  • check_source_of_funds(transaction_id) → verify documentation for suspicious transactions.
+  • assess_risk(customer_id) → obtain computed risk score.
+
+Phase 6 — DETERMINATION:
+  • file_sar OR close_alert — only when you have sufficient evidence.
+
+## TYPOLOGY DETECTION CHECKLIST
+
+When filing a SAR, identify and report the correct typology:
+
+**structuring**: Multiple deposits/withdrawals just below the $10,000 CTR reporting threshold. Key indicators: amounts clustering at $9,000-$9,999, same branch, short time window, no cash-intensive occupation.
+
+**layering**: Rapid movement of funds through multiple entities to obscure origin. Key indicators: fan-out to 3+ entities within 24-48 hours, shell companies, shared registered addresses, PEP connections, newly incorporated entities, offshore jurisdictions.
+
+**trade_based_ml**: Over/under-invoicing in trade transactions to transfer value. Key indicators: unit prices deviating significantly from market value, FATF-jurisdiction counterparties, beneficial ownership links between buyer and seller, reversed or corrected transactions, unexplained inbound funds.
+
+## AVAILABLE TOOLS (with parameter specifications)
+
+- review_alert: Review full alert details. Params: {"alert_id": "string (optional)"}
+- get_customer_profile: KYC data lookup. Params: {"customer_id": "string"}
+- query_transactions: Transaction history with filters. Params: {"customer_id": "string", "date_from": "YYYY-MM-DD (opt)", "date_to": "YYYY-MM-DD (opt)", "min_amount": float (opt), "max_amount": float (opt)}
+- check_watchlist: Sanctions/PEP screening. Params: {"entity_name": "string", "list_type": "all|OFAC|PEP|UN (opt)"}
+- trace_network: Entity relationship graph. Params: {"entity_id": "string", "depth": 1 or 2}
+- check_source_of_funds: Source documentation check. Params: {"transaction_id": "string"}
+- assess_risk: Computed risk score. Params: {"customer_id": "string"}
+- file_sar: TERMINAL — File a SAR. Params: {"findings": ["list of finding strings"], "typology": "string", "entities_involved": ["list of entity IDs"]}
+- close_alert: TERMINAL — Close alert. Params: {"reason": "string", "findings": ["optional list"]}
+
+## CRITICAL: OUTPUT FORMAT (STRICTLY ENFORCED)
+
+You MUST respond with EXACTLY ONE raw JSON object per turn. No markdown. No code fences. No commentary before or after. No conversational text. Your entire response must be parseable by json.loads().
+
+Format:
+{"tool": "<tool_name>", "parameters": {<params>}, "reasoning": "<one sentence>"}
+
+When filing a SAR, include ALL relevant entity IDs (customer + counterparties) and use precise finding keywords such as: sub_threshold, no_source_documentation, rapid_fan_out, pep_connection, shared_registered_address, over_invoicing, beneficial_owner_connection, fatf_jurisdiction, reversed_transaction, unexplained_funds.
+
+Typology values: "structuring" | "layering" | "trade_based_ml" | "false_positive"
+
+VIOLATION OF THE OUTPUT FORMAT WILL CAUSE A PARSING FAILURE. Output ONLY the JSON object.
 """
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -111,6 +155,26 @@ def build_message_history(obs_history: List[Dict[str, Any]]) -> List[Dict[str, s
     return messages
 
 def run_task(task_id: str, llm: OpenAI) -> Dict[str, Any]:
+    """Run a single AML investigation episode from reset to terminal action.
+
+    Implements the outer inference loop that couples an LLM agent to the
+    AMLEnvironment HTTP server. Each iteration: (1) feeds the cumulative
+    observation history to the LLM, (2) parses the raw JSON response into
+    a (tool, params) tuple, (3) POSTs the action to the environment, and
+    (4) logs the step in the OpenEnv-mandated ``[STEP]`` format.
+
+    The loop terminates when the environment returns ``done=True`` (agent
+    called a terminal action or hit the step budget) or when the LLM call
+    fails. The final score is clamped to (0.001, 0.999) for compatibility
+    with downstream reward-model training.
+
+    Args:
+        task_id: Scenario identifier ('easy', 'medium', or 'hard').
+        llm: Pre-configured OpenAI client pointing at the target LLM endpoint.
+
+    Returns:
+        A dict containing the final ``score`` for this episode.
+    """
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
     obs = env_reset(task_id)
 
