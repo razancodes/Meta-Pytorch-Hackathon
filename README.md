@@ -8,12 +8,77 @@ app_port: 8000
 ---
 # AML Investigation Environment for Meta-PyTorch-Hackathon
 
-
-# AML Investigation Environment
-
 An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation.
 
 An agent acts as a financial crime compliance investigator: it receives a transaction monitoring alert and must use structured tools to gather evidence and decide whether to **file a SAR** (Suspicious Activity Report) or **close the alert** as a false positive.
+
+---
+
+## 🎯 Why This Matters
+
+Most LLM benchmarks evaluate models on static question-answering or single-turn generation. **LarpLegends** tests something fundamentally harder: **multi-step, tool-augmented reasoning under domain constraints** — the exact capability that separates a language model from a production-grade autonomous agent.
+
+Anti-Money Laundering is the ideal testbed because it demands every capability that current benchmarks leave unmeasured:
+
+| Capability Tested | Why It's Hard |
+|:---|:---|
+| **Sequential Decision-Making** | The agent must plan a multi-phase investigation (triage → due diligence → network analysis → determination) where each step's output informs the next. There is no single "correct prompt." |
+| **Contextual Tool Selection** | Nine domain-specific tools with overlapping use cases. The agent must select the *highest-information-gain* tool at each step, not just follow a script. |
+| **Cross-Reference Reasoning** | Detecting layering requires connecting entity A's beneficial owner to entity B's PEP status — information scattered across multiple tool outputs that must be synthesized. |
+| **Calibrated Terminal Judgment** | The agent makes an irreversible, graded decision (file SAR vs. close alert). Premature or poorly justified decisions are penalized by a deterministic rubric. |
+| **Efficiency Under Budget** | A step-count budget creates a natural efficiency pressure. Redundant tool calls are penalized, forcing the agent to maximize marginal evidence per action. |
+
+Real-world AML compliance costs global financial institutions **over $274 billion annually** (LexisNexis 2023). Even a marginal improvement in investigator efficiency or accuracy has outsized impact. This environment provides a repeatable, deterministic benchmark to measure exactly that.
+
+---
+
+## 🏗️ Architecture Deep Dive
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        INFERENCE LOOP                          │
+│  ┌──────────┐    ┌──────────────┐    ┌───────────────────────┐ │
+│  │ LLM Call │───▶│ JSON Parser  │───▶│ HTTP POST /step       │ │
+│  │ (ReAct)  │    │ (tool,params)│    │ {tool, parameters}    │ │
+│  └────▲─────┘    └──────────────┘    └──────────┬────────────┘ │
+│       │                                         │              │
+│       │    ┌────────────────────────────────┐    │              │
+│       └────│ Observation + Reward + Done    │◀───┘              │
+│            └────────────────────────────────┘                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    ENVIRONMENT SERVER (FastAPI)                 │
+│                                                                │
+│  POST /reset ──▶ Load Scenario ──▶ Initial Observation         │
+│  POST /step  ──▶ Route to Handler ──▶ Update State ──▶ Reward  │
+│  GET  /state ──▶ Serialize AMLState                            │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                  AMLEnvironment Core                      │  │
+│  │                                                          │  │
+│  │  9 Tool Handlers ──▶ Scenario Data Layer (per-task)      │  │
+│  │  Redundancy Detector (MD5 call hashing)                  │  │
+│  │  Step Budget Enforcer (MAX_STEPS = 25)                   │  │
+│  │                                                          │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │              AMLGrader (Deterministic)             │  │  │
+│  │  │                                                    │  │  │
+│  │  │  Decision Accuracy     ████████████░░  0.30        │  │  │
+│  │  │  Typology Match        ██████░░░░░░░░  0.15        │  │  │
+│  │  │  Evidence Coverage     ██████████░░░░  0.25        │  │  │
+│  │  │  Entity F1 Score       ██████░░░░░░░░  0.15        │  │  │
+│  │  │  Step Efficiency       ██████░░░░░░░░  0.15        │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Design Decisions:**
+- **Stateful, episodic RL loop** — the environment tracks evidence flags, accumulated reward, and call history across steps within a single episode, enabling rich intermediate reward shaping.
+- **Deterministic grading** — no LLM-as-judge. Scores are computed via exact-match decision checks, keyword-overlap findings matching with semantic aliases, and precision/recall F1 over flagged entities.
+- **Dual-mode server** — automatically uses `openenv-core` when available for full OpenEnv compatibility, gracefully degrades to standalone FastAPI for local development and HuggingFace Spaces deployment.
 
 ---
 
@@ -49,7 +114,6 @@ Success is measured not just by the final decision, but by the **quality and eff
 *   **Evidence Coverage:** Finding critical flags (e.g., PEP status, shared addresses, or market price aberrations).
 
 ---
-
 ## Project Structure
 
 ```
