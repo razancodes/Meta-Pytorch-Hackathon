@@ -83,6 +83,87 @@ All entity IDs are procedurally generated per episode — no memorization possib
 
 ---
 
+## Frontend Architecture: AGUI (Agentic Graphical User Interface)
+
+The backend is invisible by design — an LLM managing RAM eviction and async queues produces no visual signal. The **AGUI** solves this by emitting a strict JSON `agui_state` payload after every environment step, which the Next.js frontend consumes to render a real-time **4-Panel Tactical Dashboard**:
+
+```
+┌───────────────────────────────┬───────────────────────────────┐
+│        RAM MONITOR            │       DISK STORAGE            │
+│                               │                               │
+│  Capacity: 2/2 observations   │  1. PEP confirmed: ENT_B      │
+│  [█████████████ FULL]         │  2. Shared address: ENT_B/C   │
+│                               │  3. $500K fan-out in 24hrs    │
+│  Slot 1: trace_network result │                               │
+│  Slot 2: check_watchlist hit  │  (persistent across eviction) │
+├───────────────────────────────┼───────────────────────────────┤
+│     ACTIVE PROCESSES          │     KERNEL DIRECTIVES         │
+│                               │                               │
+│  REQ-001: wire_trace          │  [BASE] ReAct investigation   │
+│    ETA: 0 steps (READY)       │  [INJECTED] CTR threshold:    │
+│  REQ-002: wire_trace          │    $10,000 (31 USC §5313)     │
+│    ETA: 2 steps (PENDING)     │  [INJECTED] FATF high-risk    │
+│                               │    jurisdictions list         │
+└───────────────────────────────┴───────────────────────────────┘
+```
+
+**Data contract:** `state_manager.py` builds the `AGUIState` object (defined in `models.py`) containing `ram_usage` (capacity string + active context list), `disk_storage` (list of persisted findings), `async_jobs` (job IDs with ETAs and statuses), and `kernel_directives` (base + agent-injected rules). This payload is nested inside `observation.metadata.agui_state` on every `/step` response.
+
+**Frontend replay:** `demo_eval.py` captures per-step AGUI snapshots as `step_NNN.json` files in `demo_output/`. The Next.js frontend reads these sequentially to replay the full investigation as an animated OS simulation — judges see the agent's RAM filling, data paging to disk, async jobs completing, and kernel directives accumulating in real time.
+
+---
+
+## T4 Training Pipeline & VRAM Optimization
+
+Training an 8B-parameter language model on consumer GPU hardware (NVIDIA T4, ~15GB VRAM) demands aggressive memory engineering. Our `train_ppo.py` implements a custom step-level PPO loop with three architectural decisions that make this possible:
+
+### 1. Unsloth 4-bit Quantization + LoRA
+
+The base model (Meta-Llama-3.1-8B-Instruct) is loaded via Unsloth's `FastLanguageModel` in 4-bit NF4 quantization (~5GB VRAM). Only the LoRA adapter layers (rank 16, alpha 32) are trainable — roughly 0.5% of total parameters. This drops the trainable parameter footprint to ~40MB.
+
+### 2. The `disable_adapter()` Trick
+
+Standard PPO requires a frozen reference model to compute the KL divergence penalty. Naively, this means loading two copies of the model (~10GB each) — impossible on a T4.
+
+Our solution: **one model, two modes.** During the forward pass, we call `model.disable_adapter()` to temporarily bypass the LoRA layers, producing reference logits from the frozen base weights. Then `model.enable_adapter()` restores the trainable policy. This yields an exact KL penalty with zero additional VRAM overhead.
+
+### 3. Step-Level Processing
+
+Rather than batching entire episodes (which would require storing all token sequences simultaneously), we process **one environment step at a time**. Each step: tokenize → forward → compute log-prob → accumulate into a trajectory buffer. Gradients are accumulated over 4 steps before a single optimizer update. Peak VRAM: **~10GB / 15GB** — comfortable headroom for the T4's memory.
+
+**Colab/Kaggle deployment:** `TRAINING.md` provides 6 copy-paste cells: install stack → upload project → dry-run → train → evaluate → demo. Training 50 iterations on a T4 takes ~2.5 hours.
+
+---
+
+## Pitch Strategy: Gym vs. Stage
+
+Memex uses a **dual-data architecture** to satisfy two orthogonal goals: RL generalization and judge persuasion.
+
+### The Gym — `procedural_generator.py`
+
+The training environment. Every call to `env.reset()` constructs a mathematically fresh POMDP graph:
+- Entity IDs are randomly generated (e.g., `CUST8X3F`, `ENT_A72`) — no static labels to memorize
+- Typology (structuring / layering / trade-based ML) is either specified or randomly selected
+- Difficulty scales noise: easy = 1 decoy, hard = 5+ decoys with deep fan-out networks
+- 9 unique combinations (3 typologies × 3 difficulties) ensure broad coverage
+
+This forces the PPO agent to learn **transferable OS mechanics** — when to page data to disk, when to fire async traces, when to inject compliance rules — rather than memorizing "if entity X, then file SAR."
+
+### The Stage — `demo_eval.py`
+
+The presentation environment. A hardcoded, high-impact scenario inspired by the **1MDB sovereign wealth fund scandal**:
+- 5 named entities: Taek Jho Lowe (PEP), PetraStar Energy Fund, Golden Star Holdings (BVI shell), Arabian Blue Consulting (Seychelles), and a legitimate decoy (Chen Wei Trading)
+- 8 transactions totaling $681M in layered wire transfers + a $6M cover-up reversal
+- Ground truth: `file_sar`, typology `layering`, 6 key findings (PEP connection, offshore source, shared registered address, rapid fan-out, no source documentation, reversed transaction)
+
+The demo runs in two modes:
+1. **Scripted** (`--dry-run`): 15 hardcoded investigation steps, no GPU needed. Produces a perfect +1.01 score for deterministic stage presentations.
+2. **LLM-driven** (`--model checkpoints/best`): The trained agent investigates the 1MDB case autonomously, proving that procedural training transfers to real-world scenarios.
+
+Both modes capture AGUI state for frontend replay, giving judges a cinematic walkthrough of the agent managing its own operating system while solving a $681M money laundering case.
+
+---
+
 ## Dependencies
 
 - **Runtime:** Python 3.10+, FastAPI, Pydantic v2, httpx, openai
