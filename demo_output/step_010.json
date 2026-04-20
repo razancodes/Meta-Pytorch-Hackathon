@@ -1,0 +1,44 @@
+{
+  "step_number": 10,
+  "timestamp": 1776679765.310117,
+  "action": {
+    "tool": "check_source_of_funds",
+    "parameters": {
+      "transaction_id": "TXN-1MDB-001"
+    }
+  },
+  "reasoning": "Verify source of the $681M wire",
+  "observation": {
+    "tool_result": {
+      "source_of_funds": {
+        "source": "PetraStar Energy Fund (Sovereign Wealth)",
+        "documentation": "Investment partnership agreement (unverified)",
+        "risk_flags": [
+          "Sovereign fund disbursement without board resolution",
+          "No independent audit"
+        ]
+      }
+    },
+    "message": "Source of funds for transaction 'TXN-1MDB-001': NOT verified. [!RAM EVICTION \u2014 page important data to disk!] [RAM: 2/2 | Disk: 2 | Async: 0 | Kernel: 2]",
+    "done": false,
+    "reward": 0.01
+  },
+  "agui_state": {
+    "ram_usage": {
+      "capacity": "2/2 observations",
+      "active_context": [
+        "Step 9 [check_watchlist]: Watchlist check for 'CUST-1MDB-001': No matches.",
+        "Step 10 [check_source_of_funds]: Source of funds for transaction 'TXN-1MDB-001': NOT verified."
+      ]
+    },
+    "disk_storage": [
+      "Subject is PEP, connected to Minister of Finance. High risk.",
+      "Golden Star and Arabella share registered address in Seychelles. Classic layering."
+    ],
+    "async_jobs": [],
+    "kernel_directives": [
+      "You are an AML compliance investigator. Gather evidence, assess risk, and decide: file_sar or close_alert.",
+      "Added (Step 6): Apply enhanced due diligence for PEP with offshore transfers"
+    ]
+  }
+}

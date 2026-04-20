@@ -1,0 +1,97 @@
+{
+  "step_number": 15,
+  "timestamp": 1776679765.311602,
+  "action": {
+    "tool": "file_sar",
+    "parameters": {
+      "typology": "layering",
+      "entities_involved": [
+        "CUST-1MDB-001",
+        "ENT-GSTAR-001",
+        "ENT-ARBL-001"
+      ],
+      "findings": [
+        "pep_connection",
+        "offshore_source",
+        "shared_registered_address",
+        "rapid_fan_out",
+        "no_source_documentation",
+        "reversed_transaction"
+      ]
+    }
+  },
+  "reasoning": "File SAR with complete evidence chain",
+  "observation": {
+    "tool_result": {
+      "sar_filed": true,
+      "typology": "layering",
+      "entities_flagged": [
+        "CUST-1MDB-001",
+        "ENT-GSTAR-001",
+        "ENT-ARBL-001"
+      ],
+      "findings_submitted": [
+        "pep_connection",
+        "offshore_source",
+        "shared_registered_address",
+        "rapid_fan_out",
+        "no_source_documentation",
+        "reversed_transaction"
+      ],
+      "final_score": 1.0,
+      "grader_breakdown": {
+        "decision_correct": true,
+        "typology_correct": true,
+        "findings_matched": "6/6",
+        "entities_flagged": [
+          "CUST-1MDB-001",
+          "ENT-GSTAR-001",
+          "ENT-ARBL-001"
+        ],
+        "entities_expected": [
+          "ENT-GSTAR-001",
+          "ENT-ARBL-001",
+          "CUST-1MDB-001"
+        ],
+        "step_count": 15,
+        "os_mechanic_stats": {
+          "page_faults": 1,
+          "async_timeouts": 1,
+          "successful_pages": 2,
+          "meta_injections": 1,
+          "disk_entries": 2,
+          "kernel_directives": 2
+        },
+        "final_score": 1.0
+      }
+    },
+    "message": "SAR filed successfully. Final episode score: 1.0000. Typology: layering. Entities flagged: ['CUST-1MDB-001', 'ENT-GSTAR-001', 'ENT-ARBL-001'].",
+    "done": true,
+    "reward": 1.01
+  },
+  "agui_state": {
+    "ram_usage": {
+      "capacity": "2/2 observations",
+      "active_context": [
+        "Step 14 [retrieve_async_result]: Job REQ-001 is still pending (ETA: 1 steps remaining). Async timeout penalty applied. Do NOT retrieve before ETA=0.",
+        "Step 15 [file_sar]: SAR filed successfully. Final episode score: 1.0000. Typology: layering. Entities flagged: ['CUST-1MDB-001', 'ENT-GSTAR-001', 'ENT-ARBL-001']."
+      ]
+    },
+    "disk_storage": [
+      "Subject is PEP, connected to Minister of Finance. High risk.",
+      "Golden Star and Arabella share registered address in Seychelles. Classic layering."
+    ],
+    "async_jobs": [
+      {
+        "id": "REQ-001",
+        "tool": "request_wire_trace",
+        "eta_steps": 0,
+        "status": "ready"
+      }
+    ],
+    "kernel_directives": [
+      "You are an AML compliance investigator. Gather evidence, assess risk, and decide: file_sar or close_alert.",
+      "Added (Step 6): Apply enhanced due diligence for PEP with offshore transfers"
+    ]
+  }
+}

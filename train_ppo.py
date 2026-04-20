@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
 """
-Memex OS-Agent Benchmark — PPO Training Script.
+Memex OS-Agent Benchmark — PPO Training (T4-Optimized).
 
-Trains an 8B LLM (Llama-3.1-8B-Instruct) on our AML investigation
-environment using Proximal Policy Optimization.
-
-Stack:
-  - Unsloth:  4-bit quantized model + LoRA adapters (low VRAM)
-  - TRL:      PPOTrainer for RLHF-style policy gradient updates
-  - WandB:    Experiment tracking and OS-mechanic dashboards
+Custom step-level PPO with clipped surrogate objective and KL penalty
+against the frozen base model. Designed for NVIDIA T4 (15 GB VRAM).
 
 Architecture:
-  Each training iteration collects N episodes of multi-step trajectories.
-  Every (prompt, response, reward) step is fed to TRL's PPOTrainer.
-  The model learns to maximize dense per-step rewards AND the terminal
-  composite score from our AMLGrader.
+  ┌─────────────────────────────────────────────────────────┐
+  │  Unsloth 4-bit LLM + LoRA adapters  (~5 GB)            │
+  │  ┌─────────────────────┐  ┌────────────────────────┐   │
+  │  │ Trajectory Rollout  │→ │ PPO Clipped Surrogate  │   │
+  │  │ (inference, no grad)│  │ + KL vs frozen base    │   │
+  │  └─────────────────────┘  └────────────────────────┘   │
+  │              ↑                       ↓                  │
+  │       AMLEnvironment            LoRA weight update      │
+  │    (procedural scenarios)    (AdamW, grad accum)        │
+  └─────────────────────────────────────────────────────────┘
 
 Usage:
-  python train_ppo.py                           # defaults
-  python train_ppo.py --episodes 200 --lr 5e-6  # custom
-  python train_ppo.py --dry-run                  # 2 episodes, no WandB
-
-See TRAINING.md for full setup instructions.
+  python train_ppo.py --dry-run              # quick 2-iter test
+  python train_ppo.py --iterations 50        # real training
+  python train_ppo.py --eval checkpoints/best
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
 import os
 import random
 import re
@@ -38,10 +38,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
-# ---------------------------------------------------------------------------
-# Ensure project root is importable
-# ---------------------------------------------------------------------------
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -49,735 +47,648 @@ from models import AMLAction, AMLObservation
 from server.aml_environment import AMLEnvironment
 
 
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
 # Configuration
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
-class TrainConfig:
-    """All training hyperparameters in one place."""
-
-    # Model
+class PPOConfig:
+    # ── Model ──
     model_name: str = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
-    max_seq_length: int = 4096
+    max_seq_length: int = 2048       # keep low for T4
     load_in_4bit: bool = True
 
-    # LoRA
+    # ── LoRA ──
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
-    lora_target_modules: list = field(default_factory=lambda: [
+    lora_targets: list = field(default_factory=lambda: [
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ])
 
-    # PPO
-    learning_rate: float = 5e-6
-    ppo_epochs: int = 4
-    mini_batch_size: int = 2
-    batch_size: int = 4        # steps collected before PPO update
-    gamma: float = 0.99        # discount factor
-    lam: float = 0.95          # GAE lambda
-    cliprange: float = 0.2
-    vf_coef: float = 0.1
-    max_grad_norm: float = 0.5
-    kl_penalty: str = "kl"     # KL penalty type
-    init_kl_coef: float = 0.05 # initial KL coefficient
-    adap_kl_ctrl: bool = True  # adaptive KL control
-    target_kl: float = 6.0     # target KL divergence
+    # ── PPO ──
+    lr: float = 5e-6
+    ppo_epochs: int = 4              # epochs per PPO update
+    clip_eps: float = 0.2            # clipping epsilon
+    kl_coef: float = 0.05            # KL penalty coefficient
+    gamma: float = 0.99              # discount factor
+    max_grad_norm: float = 1.0
+    grad_accum_steps: int = 4        # gradient accumulation
 
-    # Generation (strict JSON mode)
-    gen_max_new_tokens: int = 256
-    gen_temperature: float = 0.3    # low = deterministic tool calls
-    gen_top_p: float = 0.9
-    gen_do_sample: bool = True
-    gen_repetition_penalty: float = 1.1
+    # ── Generation ──
+    max_new_tokens: int = 192        # JSON tool calls are short
+    temperature: float = 0.3         # low for deterministic JSON
+    top_p: float = 0.9
+    repetition_penalty: float = 1.1
 
-    # Environment
-    episodes_per_iter: int = 4   # episodes per PPO iteration
-    total_iterations: int = 50   # total PPO iterations
-    max_steps_per_episode: int = 25
+    # ── Environment ──
+    episodes_per_iter: int = 4
+    total_iterations: int = 50
+    max_steps: int = 25
     difficulties: list = field(default_factory=lambda: ["easy", "medium", "hard"])
     typologies: list = field(default_factory=lambda: [
         "structuring", "layering", "trade_based_ml",
     ])
 
-    # Logging
+    # ── Logging / Checkpointing ──
     wandb_project: str = "memex-ppo"
-    wandb_run_name: str = ""
-    log_every_episode: bool = True
-
-    # Checkpointing
-    save_every: int = 10        # save every N iterations
+    save_every: int = 10
     output_dir: str = os.path.join(PROJECT_ROOT, "checkpoints")
-
-    # Debug
     dry_run: bool = False
 
 
-# ===========================================================================
-# System Prompt (reused from inference.py)
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
+# System Prompt (condensed for token efficiency)
+# ═══════════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = """You are a Senior AML Compliance Investigator operating within a Memex OS-Agent Environment.
+SYSTEM_PROMPT = """You are a Senior AML Compliance Investigator in a Memex OS-Agent Environment.
 
-## OUTPUT FORMAT (STRICTLY ENFORCED)
-Respond with EXACTLY ONE raw JSON object. No markdown. No explanation outside JSON.
-{"tool": "<tool_name>", "parameters": {<params>}, "reasoning": "<one sentence>"}
+OUTPUT: Respond with EXACTLY ONE raw JSON object. No markdown.
+{"tool": "<name>", "parameters": {<params>}, "reasoning": "<1 sentence>"}
 
-## OS MECHANICS
-- RAM holds LAST 2 observations. Use write_to_case_file to save important data to disk.
-- request_wire_trace returns async job. Wait for ETA before retrieve_async_result.
-- search_compliance_manual + update_system_prompt injects rules into your directives.
+OS RULES:
+- RAM holds LAST 2 observations. Use write_to_case_file to persist data.
+- request_wire_trace is ASYNC (wait for ETA). retrieve_async_result when ready.
+- search_compliance_manual + update_system_prompt injects rules (+0.15 reward).
 
-## TOOLS: review_alert, get_customer_profile, query_transactions, check_watchlist,
+TOOLS: review_alert, get_customer_profile, query_transactions, check_watchlist,
 trace_network, check_source_of_funds, assess_risk, check_market_price,
 write_to_case_file, request_wire_trace, retrieve_async_result,
 search_compliance_manual, update_system_prompt, file_sar, close_alert
 
-## TERMINAL: file_sar(typology, entities_involved, findings) | close_alert(reason)
-Typologies: "structuring" | "layering" | "trade_based_ml" | "false_positive"
-"""
+TERMINAL: file_sar(typology, entities_involved, findings) | close_alert(reason)
+Typologies: structuring | layering | trade_based_ml | false_positive"""
 
 
-# ===========================================================================
-# Prompt Formatter
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
+# Prompt Formatting & JSON Parsing
+# ═══════════════════════════════════════════════════════════════════════
 
 def format_prompt(
-    observation: AMLObservation,
+    obs: AMLObservation,
     step: int,
-    kernel_directives: List[str],
-    disk_contents: List[str],
-    ram_contents: List[str],
+    kernel: List[str],
+    disk: List[str],
+    ram: List[str],
 ) -> str:
-    """Format the current state into a chat-style prompt string for the model.
+    """Build Llama-3.1 chat-template prompt from environment state."""
+    sys_msg = SYSTEM_PROMPT
+    if kernel and len(kernel) > 1:
+        sys_msg += "\n\nKERNEL DIRECTIVES:\n" + "\n".join(f"- {d}" for d in kernel)
 
-    Uses Llama-3.1 chat template tokens for proper formatting.
-    """
-    # System message with kernel directives
-    sys_parts = [SYSTEM_PROMPT]
-    if kernel_directives and len(kernel_directives) > 1:
-        sys_parts.append("\n## ACTIVE KERNEL DIRECTIVES")
-        for d in kernel_directives:
-            sys_parts.append(f"- {d}")
-    system_msg = "\n".join(sys_parts)
-
-    # Build user context
     user_parts = []
+    if disk:
+        user_parts.append("CASE FILE (Disk):\n" + "\n".join(f"  {i}. {e}" for i, e in enumerate(disk, 1)))
+    if ram:
+        for r in ram[-2:]:
+            user_parts.append(f"[RAM] {r[:300]}")
 
-    # Disk (persistent memory)
-    if disk_contents:
-        user_parts.append("## CASE FILE (Disk — persistent)")
-        for i, entry in enumerate(disk_contents, 1):
-            user_parts.append(f"  {i}. {entry}")
-
-    # RAM (last 2 observations)
-    if ram_contents:
-        user_parts.append("## RAM (recent observations)")
-        for obs_text in ram_contents[-2:]:
-            user_parts.append(f"  [RAM] {obs_text[:300]}")
-
-    # Current observation
-    user_parts.append(f"## STEP {step} OBSERVATION")
-    obs_data = observation.tool_result if observation.tool_result else {}
-    user_parts.append(json.dumps(obs_data, indent=1, default=str)[:1500])
-
-    if observation.message:
-        user_parts.append(f"Message: {observation.message[:300]}")
+    obs_data = obs.tool_result if obs.tool_result else {}
+    user_parts.append(f"STEP {step}:\n{json.dumps(obs_data, indent=1, default=str)[:1200]}")
+    if obs.message:
+        user_parts.append(obs.message[:200])
 
     user_msg = "\n".join(user_parts)
 
-    # Format as Llama-3.1 chat template
-    prompt = (
+    return (
         f"<|begin_of_text|>"
-        f"<|start_header_id|>system<|end_header_id|>\n\n{system_msg}<|eot_id|>"
+        f"<|start_header_id|>system<|end_header_id|>\n\n{sys_msg}<|eot_id|>"
         f"<|start_header_id|>user<|end_header_id|>\n\n{user_msg}<|eot_id|>"
         f"<|start_header_id|>assistant<|end_header_id|>\n\n"
     )
-    return prompt
 
 
-# ===========================================================================
-# Response Parser
-# ===========================================================================
-
-def parse_model_output(text: str) -> Tuple[str, Dict[str, Any]]:
-    """Parse model output into (tool_name, parameters).
-
-    Robust to markdown fences, extra text, and partial JSON.
-    """
-    text = text.strip()
-    # Strip markdown fences
-    text = re.sub(r"```(?:json)?\s*", "", text).strip("` \n")
-
-    # Try full JSON parse
+def parse_action(text: str) -> Tuple[str, Dict[str, Any]]:
+    """Robust JSON tool-call parser with multi-tier fallback."""
+    text = re.sub(r"```(?:json)?\s*", "", text.strip()).strip("` \n")
+    # Tier 1: full parse
     try:
-        parsed = json.loads(text)
-        return parsed.get("tool", "review_alert"), parsed.get("parameters", {})
+        d = json.loads(text)
+        return d.get("tool", "review_alert"), d.get("parameters", {})
     except json.JSONDecodeError:
         pass
-
-    # Try to find a JSON object in the text
-    match = re.search(r'\{[^{}]*"tool"\s*:\s*"([^"]+)"[^{}]*\}', text, re.DOTALL)
-    if match:
+    # Tier 2: regex extract
+    m = re.search(r'\{[^{}]*"tool"\s*:\s*"([^"]+)"[^{}]*\}', text, re.DOTALL)
+    if m:
         try:
-            parsed = json.loads(match.group(0))
-            return parsed.get("tool", "review_alert"), parsed.get("parameters", {})
+            d = json.loads(m.group(0))
+            return d.get("tool", "review_alert"), d.get("parameters", {})
         except json.JSONDecodeError:
             pass
-
-    # Last resort: extract tool name
-    tool_match = re.search(r'"tool"\s*:\s*"([^"]+)"', text)
-    tool = tool_match.group(1) if tool_match else "review_alert"
-    return tool, {}
+    # Tier 3: tool name only
+    tm = re.search(r'"tool"\s*:\s*"([^"]+)"', text)
+    return (tm.group(1) if tm else "review_alert"), {}
 
 
-# ===========================================================================
-# Episode Rollout
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
+# Trajectory Data Structures
+# ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
-class StepRecord:
-    """One step of an episode trajectory."""
-    prompt: str            # tokenized prompt fed to the model
-    response: str          # raw text output from the model
-    reward: float          # step reward from grader
-    query_tensor: Any = None   # tokenized prompt tensor
-    response_tensor: Any = None  # tokenized response tensor
+class StepData:
+    """Single step in an episode trajectory."""
+    query_ids: torch.Tensor        # tokenized prompt
+    response_ids: torch.Tensor     # tokenized response only
+    response_start: int            # index where response begins in full seq
+    reward: float
+    old_log_prob: float            # log π_old(response | query)
+    ref_log_prob: float            # log π_ref(response | query)  [frozen base]
+    advantage: float = 0.0
+    response_text: str = ""
 
 
 @dataclass
-class EpisodeResult:
-    """Complete episode trajectory + summary stats."""
-    steps: List[StepRecord]
-    total_reward: float
-    final_score: float
+class EpisodeStats:
+    """Summary statistics for one episode."""
+    score: float
+    steps: int
     difficulty: str
     typology: str
     page_faults: int = 0
     async_timeouts: int = 0
     successful_pages: int = 0
     meta_injections: int = 0
-    step_count: int = 0
-    done: bool = False
 
 
-def rollout_episode(
-    model: Any,
-    tokenizer: Any,
-    env: AMLEnvironment,
-    config: TrainConfig,
-    difficulty: str | None = None,
-    typology: str | None = None,
-    device: str = "cuda",
-) -> EpisodeResult:
-    """Collect a full episode trajectory.
+# ═══════════════════════════════════════════════════════════════════════
+# Core PPO Trainer
+# ═══════════════════════════════════════════════════════════════════════
 
-    1. Reset the environment
-    2. Loop: format prompt → generate → parse → step environment
-    3. Collect (prompt, response, reward) tuples for PPO
+class MemexPPO:
+    """Custom step-level PPO trainer for multi-step LLM environments.
+
+    Key design choices for T4 (15 GB VRAM):
+      - Process steps ONE AT A TIME during PPO update (no batching)
+      - KL reference via model.disable_adapter() — no second model copy
+      - Precompute ref_log_prob during collection to save a fwd pass
+      - Gradient accumulation to simulate larger effective batch
     """
-    diff = difficulty or random.choice(config.difficulties)
-    typo = typology or random.choice(config.typologies)
-    task_id = diff  # get_scenario handles the rest
 
-    # Reset environment
-    init_obs = env.reset(task_id=task_id)
-    subject_id = init_obs.tool_result.get("alert", {}).get("customer_id", "")
+    def __init__(self, model, tokenizer, config: PPOConfig, device: str = "cuda"):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.cfg = config
+        self.device = device
 
-    steps: List[StepRecord] = []
-    total_reward = 0.0
-    done = False
-
-    for step_num in range(1, config.max_steps_per_episode + 1):
-        if done:
-            break
-
-        # Get OS state from the StateManager
-        ram_contents = env._sm.ram_queue if env._sm else []
-        disk_contents = env._sm.disk_contents if env._sm else []
-        kernel_directives = env._sm.kernel_directives if env._sm else []
-
-        # Format the observation as the current obs on first step
-        obs = init_obs if step_num == 1 else obs  # noqa: F821
-
-        # Build prompt
-        prompt_str = format_prompt(
-            observation=obs,
-            step=step_num,
-            kernel_directives=kernel_directives,
-            disk_contents=disk_contents,
-            ram_contents=list(ram_contents),
+        # Optimizer over LoRA parameters only
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        self.optimizer = torch.optim.AdamW(trainable, lr=config.lr)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=config.total_iterations, eta_min=config.lr * 0.1,
         )
 
-        # Tokenize
-        inputs = tokenizer(
-            prompt_str,
-            return_tensors="pt",
-            truncation=True,
-            max_length=config.max_seq_length - config.gen_max_new_tokens,
-        ).to(device)
+        # Running reward baseline (exponential moving average)
+        self._reward_ema = 0.0
+        self._reward_ema_alpha = 0.1
 
-        query_tensor = inputs["input_ids"].squeeze(0)
+    # ── Log Probability ──────────────────────────────────────────────
 
-        # Generate
+    def _compute_log_prob(
+        self, query_ids: torch.Tensor, response_ids: torch.Tensor, with_grad: bool = False,
+    ) -> torch.Tensor:
+        """Compute sum of log probabilities for response tokens."""
+        full_ids = torch.cat([query_ids, response_ids]).unsqueeze(0).to(self.device)
+        resp_start = len(query_ids)
+
+        ctx = torch.enable_grad() if with_grad else torch.no_grad()
+        with ctx:
+            logits = self.model(input_ids=full_ids).logits[0]
+            # logits[t] predicts token t+1; take response positions
+            resp_logits = logits[resp_start - 1 : -1, :]
+            log_probs = F.log_softmax(resp_logits, dim=-1)
+            token_lp = log_probs.gather(1, response_ids.to(self.device).unsqueeze(1)).squeeze(1)
+            return token_lp.sum()
+
+    def _compute_ref_log_prob(
+        self, query_ids: torch.Tensor, response_ids: torch.Tensor,
+    ) -> float:
+        """Compute reference log prob using the frozen base (LoRA disabled)."""
+        self.model.eval()
+        try:
+            with self.model.disable_adapter():
+                lp = self._compute_log_prob(query_ids, response_ids, with_grad=False)
+        except AttributeError:
+            # Fallback if disable_adapter unavailable
+            lp = self._compute_log_prob(query_ids, response_ids, with_grad=False)
+        self.model.train()
+        return lp.item()
+
+    # ── Generation ───────────────────────────────────────────────────
+
+    def generate(self, prompt: str) -> Tuple[str, torch.Tensor, torch.Tensor]:
+        """Generate a response and return (text, query_ids, response_ids)."""
+        inputs = self.tokenizer(
+            prompt, return_tensors="pt", truncation=True,
+            max_length=self.cfg.max_seq_length - self.cfg.max_new_tokens,
+        ).to(self.device)
+
+        query_ids = inputs["input_ids"].squeeze(0)
+
         with torch.no_grad():
-            outputs = model.generate(
+            out = self.model.generate(
                 **inputs,
-                max_new_tokens=config.gen_max_new_tokens,
-                temperature=config.gen_temperature,
-                top_p=config.gen_top_p,
-                do_sample=config.gen_do_sample,
-                repetition_penalty=config.gen_repetition_penalty,
-                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                max_new_tokens=self.cfg.max_new_tokens,
+                temperature=self.cfg.temperature,
+                top_p=self.cfg.top_p,
+                do_sample=True,
+                repetition_penalty=self.cfg.repetition_penalty,
+                pad_token_id=self.tokenizer.eos_token_id,
             )
+        response_ids = out[0][len(query_ids):]
+        text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+        return text, query_ids.cpu(), response_ids.cpu()
 
-        # Extract only the generated tokens (exclude prompt)
-        response_ids = outputs[0][query_tensor.shape[0]:]
-        response_text = tokenizer.decode(response_ids, skip_special_tokens=True)
+    # ── Episode Rollout ──────────────────────────────────────────────
 
-        # Parse action
-        tool_name, params = parse_model_output(response_text)
+    def rollout(
+        self, env: AMLEnvironment, difficulty: str, typology: str,
+    ) -> Tuple[List[StepData], EpisodeStats]:
+        """Collect one full episode trajectory (no gradients)."""
+        from unsloth import FastLanguageModel
+        FastLanguageModel.for_inference(self.model)
 
-        # Step the environment
-        action = AMLAction(tool=tool_name, parameters=params)
-        obs = env.step(action)
+        obs = env.reset(task_id=difficulty)
+        steps: List[StepData] = []
 
-        reward = obs.reward if obs.reward is not None else 0.0
-        done = obs.done
+        for step_num in range(1, self.cfg.max_steps + 1):
+            ram = list(env._sm.ram_queue) if env._sm else []
+            disk = env._sm.disk_contents if env._sm else []
+            kernel = env._sm.kernel_directives if env._sm else []
 
-        steps.append(StepRecord(
-            prompt=prompt_str,
-            response=response_text,
-            reward=reward,
-            query_tensor=query_tensor,
-            response_tensor=response_ids,
-        ))
+            prompt = format_prompt(obs, step_num, kernel, disk, ram)
+            resp_text, q_ids, r_ids = self.generate(prompt)
 
-        total_reward += reward
+            # Compute old & ref log probs during collection (saves fwd pass later)
+            old_lp = self._compute_log_prob(q_ids, r_ids, with_grad=False).item()
+            ref_lp = self._compute_ref_log_prob(q_ids, r_ids)
 
-    # Extract OS mechanic stats from the environment state
-    state = env._state
-    final_score = state.accumulated_reward if state else total_reward
+            # Parse and step environment
+            tool, params = parse_action(resp_text)
+            obs = env.step(AMLAction(tool=tool, parameters=params))
+            reward = obs.reward if obs.reward is not None else 0.0
 
-    return EpisodeResult(
-        steps=steps,
-        total_reward=total_reward,
-        final_score=final_score,
-        difficulty=diff,
-        typology=typo,
-        page_faults=state.page_fault_count if state else 0,
-        async_timeouts=state.async_timeout_count if state else 0,
-        successful_pages=state.successful_pages if state else 0,
-        meta_injections=state.meta_injections if state else 0,
-        step_count=len(steps),
-        done=done,
-    )
+            steps.append(StepData(
+                query_ids=q_ids, response_ids=r_ids,
+                response_start=len(q_ids),
+                reward=reward, old_log_prob=old_lp, ref_log_prob=ref_lp,
+                response_text=resp_text,
+            ))
+
+            if obs.done:
+                break
+
+        # Compute discounted returns and advantages
+        self._compute_advantages(steps)
+
+        st = env._state
+        stats = EpisodeStats(
+            score=st.accumulated_reward, steps=len(steps),
+            difficulty=difficulty, typology=typology,
+            page_faults=st.page_fault_count, async_timeouts=st.async_timeout_count,
+            successful_pages=st.successful_pages, meta_injections=st.meta_injections,
+        )
+        return steps, stats
+
+    def _compute_advantages(self, steps: List[StepData]) -> None:
+        """Compute discounted returns and normalized advantages."""
+        T = len(steps)
+        returns = [0.0] * T
+        G = 0.0
+        for t in reversed(range(T)):
+            G = steps[t].reward + self.cfg.gamma * G
+            returns[t] = G
+
+        # Update EMA baseline
+        mean_return = sum(returns) / T
+        self._reward_ema = (
+            self._reward_ema_alpha * mean_return
+            + (1 - self._reward_ema_alpha) * self._reward_ema
+        )
+
+        # Advantages = returns - baseline, then normalize
+        advs = [r - self._reward_ema for r in returns]
+        std = max((sum(a**2 for a in advs) / T) ** 0.5, 1e-8)
+        for t in range(T):
+            steps[t].advantage = advs[t] / std
+
+    # ── PPO Update ───────────────────────────────────────────────────
+
+    def ppo_update(self, all_steps: List[StepData]) -> Dict[str, float]:
+        """Run PPO epochs on collected trajectory steps.
+
+        Processes steps ONE AT A TIME for minimal VRAM usage.
+        Uses gradient accumulation to simulate larger batch.
+        """
+        from unsloth import FastLanguageModel
+        FastLanguageModel.for_training(self.model)
+
+        total_policy_loss = 0.0
+        total_kl = 0.0
+        total_entropy = 0.0
+        n_updates = 0
+
+        for epoch in range(self.cfg.ppo_epochs):
+            random.shuffle(all_steps)
+            self.optimizer.zero_grad()
+
+            for i, step in enumerate(all_steps):
+                try:
+                    # Current policy log prob (WITH gradients)
+                    new_lp = self._compute_log_prob(
+                        step.query_ids, step.response_ids, with_grad=True,
+                    )
+
+                    # PPO clipped surrogate
+                    ratio = torch.exp(new_lp - step.old_log_prob)
+                    adv = torch.tensor(step.advantage, device=self.device)
+                    surr1 = ratio * adv
+                    surr2 = torch.clamp(ratio, 1.0 - self.cfg.clip_eps, 1.0 + self.cfg.clip_eps) * adv
+                    policy_loss = -torch.min(surr1, surr2)
+
+                    # KL penalty against frozen base
+                    kl = new_lp - step.ref_log_prob
+                    kl_loss = self.cfg.kl_coef * kl
+
+                    loss = (policy_loss + kl_loss) / self.cfg.grad_accum_steps
+                    loss.backward()
+
+                    total_policy_loss += policy_loss.item()
+                    total_kl += kl.item()
+                    n_updates += 1
+
+                    # Gradient accumulation step
+                    if (i + 1) % self.cfg.grad_accum_steps == 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            [p for p in self.model.parameters() if p.requires_grad],
+                            self.cfg.max_grad_norm,
+                        )
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
+
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        print(f"  ⚠ OOM on step {i}, skipping")
+                        torch.cuda.empty_cache()
+                        self.optimizer.zero_grad()
+                    else:
+                        raise
+
+            # Flush remaining gradients
+            if len(all_steps) % self.cfg.grad_accum_steps != 0:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+
+        self.scheduler.step()
+
+        n = max(n_updates, 1)
+        return {
+            "ppo/loss/policy": total_policy_loss / n,
+            "ppo/kl": total_kl / n,
+            "ppo/steps_trained": n_updates,
+            "ppo/lr": self.scheduler.get_last_lr()[0],
+        }
+
+    # ── Checkpoint ───────────────────────────────────────────────────
+
+    def save(self, path: str) -> None:
+        os.makedirs(path, exist_ok=True)
+        self.model.save_pretrained(path)
+        self.tokenizer.save_pretrained(path)
+        print(f"  💾 Saved: {path}")
 
 
-# ===========================================================================
-# Main Training Loop
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
+# VRAM Monitoring
+# ═══════════════════════════════════════════════════════════════════════
 
-def train(config: TrainConfig) -> None:
-    """Main PPO training function."""
+def vram_status() -> str:
+    if not torch.cuda.is_available():
+        return "CPU mode"
+    alloc = torch.cuda.memory_allocated() / 1e9
+    total = torch.cuda.get_device_properties(0).total_mem / 1e9
+    return f"{alloc:.1f}/{total:.1f} GB"
 
-    print("=" * 70)
-    print("  MEMEX OS-AGENT BENCHMARK — PPO TRAINING")
-    print("=" * 70)
-    print(f"  Model:      {config.model_name}")
-    print(f"  LoRA r:     {config.lora_r}")
-    print(f"  LR:         {config.learning_rate}")
-    print(f"  Episodes:   {config.episodes_per_iter} per iteration × {config.total_iterations} iters")
-    print(f"  Batch size: {config.batch_size}")
-    print(f"  Dry run:    {config.dry_run}")
-    print("=" * 70)
 
-    # ------------------------------------------------------------------ #
-    # 1. Load model with Unsloth                                          #
-    # ------------------------------------------------------------------ #
-    print("\n[1/5] Loading model with Unsloth (4-bit quantized)...")
+# ═══════════════════════════════════════════════════════════════════════
+# Training Loop
+# ═══════════════════════════════════════════════════════════════════════
+
+def train(cfg: PPOConfig) -> None:
+    banner = f"""
+{'═'*60}
+  MEMEX PPO TRAINER  —  T4-Optimized
+  Model:  {cfg.model_name}
+  LoRA:   r={cfg.lora_r}  α={cfg.lora_alpha}
+  LR:     {cfg.lr}  |  Clip: {cfg.clip_eps}  |  KL: {cfg.kl_coef}
+  Iters:  {cfg.total_iterations}  ×  {cfg.episodes_per_iter} ep/iter
+  Dry:    {cfg.dry_run}
+{'═'*60}"""
+    print(banner)
+
+    # ── 1. Load Model ──
+    print("[1/4] Loading model with Unsloth...")
     from unsloth import FastLanguageModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=config.model_name,
-        max_seq_length=config.max_seq_length,
-        load_in_4bit=config.load_in_4bit,
-        dtype=None,  # auto-detect
-    )
-
-    # Ensure pad token exists
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    print(f"  ✓ Model loaded: {config.model_name}")
-    print(f"  ✓ Vocab size: {len(tokenizer)}")
-
-    # ------------------------------------------------------------------ #
-    # 2. Attach LoRA adapters                                              #
-    # ------------------------------------------------------------------ #
-    print("\n[2/5] Attaching LoRA adapters...")
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=config.lora_r,
-        lora_alpha=config.lora_alpha,
-        lora_dropout=config.lora_dropout,
-        target_modules=config.lora_target_modules,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=42,
-    )
-
-    trainable, total = 0, 0
-    for p in model.parameters():
-        total += p.numel()
-        if p.requires_grad:
-            trainable += p.numel()
-    print(f"  ✓ Trainable: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
-
-    # ------------------------------------------------------------------ #
-    # 3. Initialize PPOTrainer                                             #
-    # ------------------------------------------------------------------ #
-    print("\n[3/5] Initializing TRL PPOTrainer...")
-    from trl import PPOConfig, PPOTrainer
-
-    ppo_config = PPOConfig(
-        model_name=config.model_name,
-        learning_rate=config.learning_rate,
-        ppo_epochs=config.ppo_epochs,
-        mini_batch_size=config.mini_batch_size,
-        batch_size=config.batch_size,
-        gradient_accumulation_steps=1,
-        optimize_cuda_cache=True,
-        log_with="wandb" if not config.dry_run else None,
-        seed=42,
-        kl_penalty=config.kl_penalty,
-        init_kl_coef=config.init_kl_coef,
-        adap_kl_ctrl=config.adap_kl_ctrl,
-        target=config.target_kl,
-        cliprange=config.cliprange,
-        vf_coef=config.vf_coef,
-        max_grad_norm=config.max_grad_norm,
-    )
-
-    # Create a frozen reference model for KL divergence
-    ref_model, _ = FastLanguageModel.from_pretrained(
-        model_name=config.model_name,
-        max_seq_length=config.max_seq_length,
-        load_in_4bit=config.load_in_4bit,
+        model_name=cfg.model_name,
+        max_seq_length=cfg.max_seq_length,
+        load_in_4bit=cfg.load_in_4bit,
         dtype=None,
     )
-    ref_model.eval()
-    for p in ref_model.parameters():
-        p.requires_grad = False
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    print(f"  ✓ Loaded  |  VRAM: {vram_status()}")
 
-    ppo_trainer = PPOTrainer(
-        config=ppo_config,
-        model=model,
-        ref_model=ref_model,
-        tokenizer=tokenizer,
+    # ── 2. Attach LoRA ──
+    print("[2/4] Attaching LoRA adapters...")
+    model = FastLanguageModel.get_peft_model(
+        model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
+        lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
+        bias="none", use_gradient_checkpointing="unsloth", random_state=42,
     )
-    print("  ✓ PPOTrainer initialized")
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_p = sum(p.numel() for p in model.parameters())
+    print(f"  ✓ LoRA: {trainable:,} / {total_p:,} ({100*trainable/total_p:.2f}%)")
+    print(f"  VRAM: {vram_status()}")
 
-    # ------------------------------------------------------------------ #
-    # 4. Initialize WandB                                                  #
-    # ------------------------------------------------------------------ #
-    if not config.dry_run:
-        print("\n[4/5] Initializing WandB...")
+    # ── 3. WandB ──
+    if not cfg.dry_run:
+        print("[3/4] Initializing WandB...")
         import wandb
-        wandb.init(
-            project=config.wandb_project,
-            name=config.wandb_run_name or f"memex-ppo-{int(time.time())}",
-            config={
-                "model": config.model_name,
-                "lora_r": config.lora_r,
-                "lr": config.learning_rate,
-                "batch_size": config.batch_size,
-                "ppo_epochs": config.ppo_epochs,
-                "episodes_per_iter": config.episodes_per_iter,
-                "total_iterations": config.total_iterations,
-                "gen_temperature": config.gen_temperature,
-            },
-        )
-        print("  ✓ WandB initialized")
+        wandb.init(project=cfg.wandb_project, name=f"memex-{int(time.time())}",
+                   config=vars(cfg))
+        print("  ✓ WandB ready")
     else:
-        print("\n[4/5] WandB SKIPPED (dry-run mode)")
+        print("[3/4] WandB SKIPPED (dry-run)")
 
-    # ------------------------------------------------------------------ #
-    # 5. Training Loop                                                     #
-    # ------------------------------------------------------------------ #
-    print("\n[5/5] Starting PPO training loop...\n")
-
-    env = AMLEnvironment()
+    # ── 4. Train ──
+    print("[4/4] Starting training loop...\n")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    total_iters = 2 if config.dry_run else config.total_iterations
+    ppo = MemexPPO(model, tokenizer, cfg, device)
+    env = AMLEnvironment()
 
-    # Enable generation mode for rollouts
-    FastLanguageModel.for_inference(model)
+    iters = 2 if cfg.dry_run else cfg.total_iterations
+    eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
+    best_score = -float("inf")
 
-    global_episode = 0
-    best_mean_reward = -float("inf")
+    for it in range(1, iters + 1):
+        t0 = time.time()
+        all_steps: List[StepData] = []
+        ep_stats: List[EpisodeStats] = []
 
-    for iteration in range(1, total_iters + 1):
-        iter_start = time.time()
-
-        # ---- Collect trajectories ----
-        all_queries: List[torch.Tensor] = []
-        all_responses: List[torch.Tensor] = []
-        all_rewards: List[torch.Tensor] = []
-
-        iter_total_reward = 0.0
-        iter_page_faults = 0
-        iter_async_timeouts = 0
-        iter_successful_pages = 0
-        iter_meta_injections = 0
-        iter_steps = 0
-        iter_episodes = 0
-        episode_scores: List[float] = []
-
-        eps_per_iter = 1 if config.dry_run else config.episodes_per_iter
-
-        for ep in range(eps_per_iter):
-            global_episode += 1
-
-            # Randomize difficulty and typology
-            diff = random.choice(config.difficulties)
-            typo = random.choice(config.typologies)
-
-            episode = rollout_episode(
-                model=model,
-                tokenizer=tokenizer,
-                env=env,
-                config=config,
-                difficulty=diff,
-                typology=typo,
-                device=device,
-            )
-
-            # Collect step-level (query, response, reward) for PPO
-            for step_rec in episode.steps:
-                if step_rec.query_tensor is not None and step_rec.response_tensor is not None:
-                    all_queries.append(step_rec.query_tensor)
-                    all_responses.append(step_rec.response_tensor)
-                    all_rewards.append(torch.tensor(step_rec.reward, dtype=torch.float32))
-
-            # Accumulate stats
-            iter_total_reward += episode.final_score
-            iter_page_faults += episode.page_faults
-            iter_async_timeouts += episode.async_timeouts
-            iter_successful_pages += episode.successful_pages
-            iter_meta_injections += episode.meta_injections
-            iter_steps += episode.step_count
-            iter_episodes += 1
-            episode_scores.append(episode.final_score)
-
-            if config.log_every_episode:
-                print(
-                    f"  Iter {iteration:>3} | Ep {ep+1:>2} | "
-                    f"{diff}/{typo} | "
-                    f"steps={episode.step_count:>2} | "
-                    f"score={episode.final_score:+.4f} | "
-                    f"PF={episode.page_faults} AT={episode.async_timeouts} "
-                    f"SP={episode.successful_pages} MI={episode.meta_injections}"
-                )
-
-        # ---- PPO Update ----
-        if len(all_queries) >= config.mini_batch_size:
-            # Switch model to training mode
-            FastLanguageModel.for_training(model)
+        # ── Collect trajectories ──
+        for ep in range(eps_per):
+            diff = random.choice(cfg.difficulties)
+            typo = random.choice(cfg.typologies)
 
             try:
-                stats = ppo_trainer.step(all_queries, all_responses, all_rewards)
-                ppo_loss = stats.get("ppo/loss/total", 0.0)
-                ppo_kl = stats.get("objective/kl", 0.0)
+                steps, stats = ppo.rollout(env, diff, typo)
+                all_steps.extend(steps)
+                ep_stats.append(stats)
+
+                print(
+                    f"  It {it:>3} Ep {ep+1} | {diff}/{typo} | "
+                    f"steps={stats.steps:>2} score={stats.score:+.3f} | "
+                    f"PF={stats.page_faults} AT={stats.async_timeouts} "
+                    f"SP={stats.successful_pages} MI={stats.meta_injections}"
+                )
+                # Show a sample response from the first step
+                if ep == 0 and steps:
+                    print(f"    [sample] {steps[0].response_text[:120]}...")
+
             except Exception as e:
-                print(f"  ⚠ PPO step failed: {e}. Skipping update.")
-                ppo_loss = 0.0
-                ppo_kl = 0.0
-                stats = {}
+                print(f"  ⚠ Episode failed: {e}")
+                continue
 
-            # Switch back to inference mode for next rollout
-            FastLanguageModel.for_inference(model)
-        else:
-            ppo_loss = 0.0
-            ppo_kl = 0.0
-            stats = {}
-            print(f"  ⚠ Only {len(all_queries)} steps collected, skipping PPO update")
+        if not all_steps:
+            print(f"  ⚠ No steps collected, skipping iteration {it}")
+            continue
 
-        # ---- Logging ----
-        mean_reward = iter_total_reward / max(iter_episodes, 1)
-        iter_time = time.time() - iter_start
+        # ── PPO Update ──
+        ppo_stats = ppo.ppo_update(all_steps)
+
+        # ── Stats ──
+        mean_score = sum(s.score for s in ep_stats) / len(ep_stats)
+        total_pf = sum(s.page_faults for s in ep_stats)
+        total_at = sum(s.async_timeouts for s in ep_stats)
+        total_sp = sum(s.successful_pages for s in ep_stats)
+        total_mi = sum(s.meta_injections for s in ep_stats)
+        elapsed = time.time() - t0
 
         print(
-            f"\n  === Iter {iteration}/{total_iters} Summary ===\n"
-            f"    Mean reward:       {mean_reward:+.4f}\n"
-            f"    Episode scores:    {[f'{s:+.3f}' for s in episode_scores]}\n"
-            f"    PPO loss:          {ppo_loss:.6f}\n"
-            f"    KL divergence:     {ppo_kl:.6f}\n"
-            f"    Total steps:       {iter_steps}\n"
-            f"    OS: PF={iter_page_faults} AT={iter_async_timeouts} "
-            f"SP={iter_successful_pages} MI={iter_meta_injections}\n"
-            f"    Time:              {iter_time:.1f}s\n"
+            f"\n  ═══ Iter {it}/{iters} ═══\n"
+            f"    Mean score:  {mean_score:+.4f}\n"
+            f"    PPO loss:    {ppo_stats['ppo/loss/policy']:.6f}\n"
+            f"    KL:          {ppo_stats['ppo/kl']:.6f}\n"
+            f"    OS: PF={total_pf} AT={total_at} SP={total_sp} MI={total_mi}\n"
+            f"    VRAM: {vram_status()}  |  {elapsed:.0f}s\n"
         )
 
-        if not config.dry_run:
+        # ── WandB ──
+        if not cfg.dry_run:
             import wandb
             wandb.log({
-                "iteration": iteration,
-                "ppo/returns/mean": mean_reward,
-                "ppo/loss/total": ppo_loss,
-                "ppo/kl_divergence": ppo_kl,
-                "env/mean_episode_score": mean_reward,
-                "env/total_steps": iter_steps,
-                "env/episodes": iter_episodes,
-                "os/page_faults": iter_page_faults,
-                "os/async_timeouts": iter_async_timeouts,
-                "os/successful_pages": iter_successful_pages,
-                "os/meta_injections": iter_meta_injections,
+                "iteration": it,
+                "ppo/returns/mean": mean_score,
+                **ppo_stats,
+                "os/page_faults": total_pf,
+                "os/async_timeouts": total_at,
+                "os/successful_pages": total_sp,
+                "os/meta_injections": total_mi,
+                "perf/iter_seconds": elapsed,
+                "perf/vram_gb": torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
             })
 
-        # ---- Checkpointing ----
-        if iteration % config.save_every == 0 or mean_reward > best_mean_reward:
-            if mean_reward > best_mean_reward:
-                best_mean_reward = mean_reward
-                tag = "best"
-            else:
-                tag = f"iter-{iteration}"
+        # ── Checkpoint ──
+        if mean_score > best_score:
+            best_score = mean_score
+            ppo.save(os.path.join(cfg.output_dir, "best"))
+        if it % cfg.save_every == 0:
+            ppo.save(os.path.join(cfg.output_dir, f"iter-{it}"))
 
-            save_path = os.path.join(config.output_dir, tag)
-            os.makedirs(save_path, exist_ok=True)
-            model.save_pretrained(save_path)
-            tokenizer.save_pretrained(save_path)
-            print(f"  💾 Checkpoint saved: {save_path}")
-
-        # GC
-        del all_queries, all_responses, all_rewards
+        # ── GC ──
+        del all_steps
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # ---- Finish ----
-    print("\n" + "=" * 70)
-    print("  TRAINING COMPLETE")
-    print(f"  Best mean reward: {best_mean_reward:+.4f}")
-    print("=" * 70)
+    # ── Final save ──
+    ppo.save(os.path.join(cfg.output_dir, "final"))
+    print(f"\n{'═'*60}")
+    print(f"  TRAINING COMPLETE  |  Best: {best_score:+.4f}")
+    print(f"{'═'*60}\n")
 
-    # Save final model
-    final_path = os.path.join(config.output_dir, "final")
-    os.makedirs(final_path, exist_ok=True)
-    model.save_pretrained(final_path)
-    tokenizer.save_pretrained(final_path)
-    print(f"  Final model saved: {final_path}")
-
-    if not config.dry_run:
+    if not cfg.dry_run:
         import wandb
         wandb.finish()
 
 
-# ===========================================================================
-# Evaluation Helper
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
+# Evaluation
+# ═══════════════════════════════════════════════════════════════════════
 
-def evaluate(
-    model_path: str,
-    num_episodes: int = 9,
-    seed: int = 42,
-) -> None:
-    """Evaluate a trained model on all difficulty/typology combinations."""
+def evaluate(model_path: str):
+    """Evaluate a checkpoint across all 9 difficulty×typology combos."""
     from unsloth import FastLanguageModel
 
-    print(f"\n{'='*70}")
-    print(f"  EVALUATION: {model_path}")
-    print(f"{'='*70}")
+    print(f"\n{'═'*60}\n  EVALUATION: {model_path}\n{'═'*60}")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_path,
-        max_seq_length=4096,
-        load_in_4bit=True,
+        model_name=model_path, max_seq_length=2048, load_in_4bit=True,
     )
-    FastLanguageModel.for_inference(model)
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    FastLanguageModel.for_inference(model)
 
-    config = TrainConfig()
+    cfg = PPOConfig()
+    ppo = MemexPPO(model, tokenizer, cfg)
     env = AMLEnvironment()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    results = []
-    random.seed(seed)
-
+    scores = []
     for diff in ["easy", "medium", "hard"]:
         for typo in ["structuring", "layering", "trade_based_ml"]:
-            episode = rollout_episode(
-                model, tokenizer, env, config,
-                difficulty=diff, typology=typo, device=device,
-            )
-            results.append((diff, typo, episode))
+            _, stats = ppo.rollout(env, diff, typo)
+            scores.append(stats.score)
             print(
-                f"  {diff:>6}/{typo:<15} | "
-                f"steps={episode.step_count:>2} | "
-                f"score={episode.final_score:+.4f} | "
-                f"done={episode.done} | "
-                f"PF={episode.page_faults} AT={episode.async_timeouts} "
-                f"SP={episode.successful_pages} MI={episode.meta_injections}"
+                f"  {diff:>6}/{typo:<15} | steps={stats.steps:>2} | "
+                f"score={stats.score:+.4f} | "
+                f"PF={stats.page_faults} SP={stats.successful_pages} MI={stats.meta_injections}"
             )
 
-    scores = [r[2].final_score for r in results]
-    print(f"\n  Mean: {sum(scores)/len(scores):+.4f}  |  "
-          f"Min: {min(scores):+.4f}  |  Max: {max(scores):+.4f}")
-    print("=" * 70)
+    print(f"\n  Mean: {sum(scores)/len(scores):+.4f}  "
+          f"Min: {min(scores):+.4f}  Max: {max(scores):+.4f}")
+    print(f"{'═'*60}\n")
 
 
-# ===========================================================================
+# ═══════════════════════════════════════════════════════════════════════
 # CLI
-# ===========================================================================
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Memex PPO Training")
-
-    p.add_argument("--model", type=str, default=TrainConfig.model_name,
-                   help="HuggingFace model name or path")
-    p.add_argument("--lr", type=float, default=TrainConfig.learning_rate)
-    p.add_argument("--lora-r", type=int, default=TrainConfig.lora_r)
-    p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
-    p.add_argument("--episodes", type=int, default=TrainConfig.episodes_per_iter,
-                   help="Episodes per PPO iteration")
-    p.add_argument("--iterations", type=int, default=TrainConfig.total_iterations)
-    p.add_argument("--temperature", type=float, default=TrainConfig.gen_temperature)
-    p.add_argument("--wandb-project", type=str, default=TrainConfig.wandb_project)
-    p.add_argument("--output-dir", type=str, default=TrainConfig.output_dir)
-    p.add_argument("--dry-run", action="store_true",
-                   help="Quick 2-iteration test run without WandB")
-    p.add_argument("--eval", type=str, default=None, metavar="MODEL_PATH",
-                   help="Evaluate a trained checkpoint instead of training")
-
-    return p.parse_args()
-
+# ═══════════════════════════════════════════════════════════════════════
 
 def main():
-    args = parse_args()
+    p = argparse.ArgumentParser(description="Memex PPO Trainer")
+    p.add_argument("--model", default=PPOConfig.model_name)
+    p.add_argument("--lr", type=float, default=PPOConfig.lr)
+    p.add_argument("--lora-r", type=int, default=PPOConfig.lora_r)
+    p.add_argument("--episodes", type=int, default=PPOConfig.episodes_per_iter)
+    p.add_argument("--iterations", type=int, default=PPOConfig.total_iterations)
+    p.add_argument("--temperature", type=float, default=PPOConfig.temperature)
+    p.add_argument("--wandb-project", default=PPOConfig.wandb_project)
+    p.add_argument("--output-dir", default=PPOConfig.output_dir)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--eval", type=str, default=None, metavar="PATH")
+    args = p.parse_args()
 
     if args.eval:
         evaluate(args.eval)
-        return
-
-    config = TrainConfig(
-        model_name=args.model,
-        learning_rate=args.lr,
-        lora_r=args.lora_r,
-        batch_size=args.batch_size,
-        episodes_per_iter=args.episodes,
-        total_iterations=args.iterations,
-        gen_temperature=args.temperature,
-        wandb_project=args.wandb_project,
-        output_dir=args.output_dir,
-        dry_run=args.dry_run,
-    )
-
-    train(config)
+    else:
+        train(PPOConfig(
+            model_name=args.model, lr=args.lr, lora_r=args.lora_r,
+            episodes_per_iter=args.episodes, total_iterations=args.iterations,
+            temperature=args.temperature,
+            wandb_project=args.wandb_project, output_dir=args.output_dir,
+            dry_run=args.dry_run,
+        ))
 
 
 if __name__ == "__main__":
