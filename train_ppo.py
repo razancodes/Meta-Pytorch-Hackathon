@@ -312,7 +312,7 @@ class MemexPPO:
         steps: List[StepData] = []
 
         for step_num in range(1, self.cfg.max_steps + 1):
-            ram = list(env._sm.ram_queue) if env._sm else []
+            ram = env._sm.ram_contents if env._sm else []
             disk = env._sm.disk_contents if env._sm else []
             kernel = env._sm.kernel_directives if env._sm else []
 
@@ -466,7 +466,7 @@ def vram_status() -> str:
     if not torch.cuda.is_available():
         return "CPU mode"
     alloc = torch.cuda.memory_allocated() / 1e9
-    total = torch.cuda.get_device_properties(0).total_mem / 1e9
+    total = torch.cuda.get_device_properties(0).total_memory / 1e9
     return f"{alloc:.1f}/{total:.1f} GB"
 
 
