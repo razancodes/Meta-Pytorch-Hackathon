@@ -115,7 +115,7 @@
     {
       "step": 14,
       "tool": "retrieve_async_result",
-      "reward": -0.17,
+      "reward": -0.07,
       "done": false
     },
     {

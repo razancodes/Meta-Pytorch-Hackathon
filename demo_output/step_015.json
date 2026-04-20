@@ -1,6 +1,6 @@
 {
   "step_number": 15,
-  "timestamp": 1776679765.311602,
+  "timestamp": 1776696027.0974069,
   "action": {
     "tool": "file_sar",
     "parameters": {
@@ -49,14 +49,14 @@
           "ENT-ARBL-001"
         ],
         "entities_expected": [
-          "ENT-GSTAR-001",
           "ENT-ARBL-001",
-          "CUST-1MDB-001"
+          "CUST-1MDB-001",
+          "ENT-GSTAR-001"
         ],
         "step_count": 15,
         "os_mechanic_stats": {
           "page_faults": 1,
-          "async_timeouts": 1,
+          "async_timeouts": 0,
           "successful_pages": 2,
           "meta_injections": 1,
           "disk_entries": 2,
@@ -73,7 +73,7 @@
     "ram_usage": {
       "capacity": "2/2 observations",
       "active_context": [
-        "Step 14 [retrieve_async_result]: Job REQ-001 is still pending (ETA: 1 steps remaining). Async timeout penalty applied. Do NOT retrieve before ETA=0.",
+        "Step 14 [retrieve_async_result]: Async job REQ-001 retrieved successfully. Wire trace data available.",
         "Step 15 [file_sar]: SAR filed successfully. Final episode score: 1.0000. Typology: layering. Entities flagged: ['CUST-1MDB-001', 'ENT-GSTAR-001', 'ENT-ARBL-001']."
       ]
     },
@@ -81,14 +81,7 @@
       "Subject is PEP, connected to Minister of Finance. High risk.",
       "Golden Star and Arabella share registered address in Seychelles. Classic layering."
     ],
-    "async_jobs": [
-      {
-        "id": "REQ-001",
-        "tool": "request_wire_trace",
-        "eta_steps": 0,
-        "status": "ready"
-      }
-    ],
+    "async_jobs": [],
     "kernel_directives": [
       "You are an AML compliance investigator. Gather evidence, assess risk, and decide: file_sar or close_alert.",
       "Added (Step 6): Apply enhanced due diligence for PEP with offshore transfers"

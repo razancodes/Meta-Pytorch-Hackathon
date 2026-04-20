@@ -1,6 +1,6 @@
 {
   "step_number": 11,
-  "timestamp": 1776679765.3102508,
+  "timestamp": 1776696027.0962176,
   "action": {
     "tool": "request_wire_trace",
     "parameters": {
@@ -12,10 +12,10 @@
     "tool_result": {
       "job_id": "REQ-001",
       "status": "pending",
-      "eta_steps": 4,
-      "message": "Wire trace request enqueued. Result will be available in 4 steps. Use retrieve_async_result(job_id='REQ-001') when ETA reaches 0."
+      "eta_steps": 3,
+      "message": "Wire trace request enqueued. Result will be available in 3 steps. Use retrieve_async_result(job_id='REQ-001') when ETA reaches 0."
     },
-    "message": "Wire trace enqueued as REQ-001 (ETA: 4 steps). Continue investigating \u2014 do NOT wait idle. [!RAM EVICTION \u2014 page important data to disk!] [RAM: 2/2 | Disk: 2 | Async: 1 | Kernel: 2]",
+    "message": "Wire trace enqueued as REQ-001 (ETA: 3 steps). Continue investigating \u2014 do NOT wait idle. [!RAM EVICTION \u2014 page important data to disk!] [RAM: 2/2 | Disk: 2 | Async: 1 | Kernel: 2]",
     "done": false,
     "reward": 0.01
   },
@@ -24,7 +24,7 @@
       "capacity": "2/2 observations",
       "active_context": [
         "Step 10 [check_source_of_funds]: Source of funds for transaction 'TXN-1MDB-001': NOT verified.",
-        "Step 11 [request_wire_trace]: Wire trace enqueued as REQ-001 (ETA: 4 steps). Continue investigating \u2014 do NOT wait idle."
+        "Step 11 [request_wire_trace]: Wire trace enqueued as REQ-001 (ETA: 3 steps). Continue investigating \u2014 do NOT wait idle."
       ]
     },
     "disk_storage": [
@@ -35,7 +35,7 @@
       {
         "id": "REQ-001",
         "tool": "request_wire_trace",
-        "eta_steps": 4,
+        "eta_steps": 3,
         "status": "pending"
       }
     ],

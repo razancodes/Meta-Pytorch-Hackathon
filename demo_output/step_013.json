@@ -1,6 +1,6 @@
 {
   "step_number": 13,
-  "timestamp": 1776679765.3104804,
+  "timestamp": 1776696027.0964963,
   "action": {
     "tool": "check_source_of_funds",
     "parameters": {
@@ -39,7 +39,7 @@
       {
         "id": "REQ-001",
         "tool": "request_wire_trace",
-        "eta_steps": 2,
+        "eta_steps": 1,
         "status": "pending"
       }
     ],

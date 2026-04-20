@@ -1,8 +1,8 @@
 """
 Memex OS-Agent Benchmark — HTTP client.
 
-Thin Python wrapper around the FastAPI server endpoints with convenience
-methods for all 15 tools (9 domain + 6 OS-mechanic).
+Thin Python wrapper around the FastAPI server endpoints. Supports both
+legacy domain tools (9) and OS-mechanic tools (6) for a total of 15 tools.
 """
 
 from __future__ import annotations
@@ -14,7 +14,20 @@ import httpx
 
 
 class AMLEnvironmentClient:
-    """HTTP client for the Memex AML Investigation Environment server."""
+    """HTTP client for the Memex AML Investigation Environment.
+
+    Usage
+    -----
+    with AMLEnvironmentClient() as client:
+        obs = client.reset(task_id="easy")
+        obs = client.review_alert()
+        obs = client.write_to_case_file("PEP connection confirmed for ENT_B")
+        obs = client.file_sar(
+            findings=["pep_connection", "shared_address"],
+            typology="layering",
+            entities_involved=["CUST002", "ENT_B"],
+        )
+    """
 
     def __init__(
         self,
@@ -26,11 +39,12 @@ class AMLEnvironmentClient:
         ).rstrip("/")
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
-    # ------------------------------------------------------------------ #
-    # Core endpoints                                                       #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Core endpoints
+    # ------------------------------------------------------------------
 
     def health(self) -> Dict[str, Any]:
+        """Check server health."""
         resp = self._client.get("/health")
         resp.raise_for_status()
         return resp.json()
@@ -41,6 +55,7 @@ class AMLEnvironmentClient:
         seed: Optional[int] = None,
         episode_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Reset the environment and return the initial observation."""
         payload: Dict[str, Any] = {"task_id": task_id}
         if seed is not None:
             payload["seed"] = seed
@@ -57,6 +72,7 @@ class AMLEnvironmentClient:
         metadata: Optional[Dict[str, Any]] = None,
         timeout_s: Optional[float] = None,
     ) -> Dict[str, Any]:
+        """Execute a tool action and return the observation."""
         payload: Dict[str, Any] = {
             "action": {
                 "tool": tool,
@@ -71,19 +87,14 @@ class AMLEnvironmentClient:
         return resp.json()
 
     def get_state(self) -> Dict[str, Any]:
+        """Return the current environment state snapshot."""
         resp = self._client.get("/state")
         resp.raise_for_status()
         return resp.json()
 
-    def get_agui(self) -> Dict[str, Any]:
-        """Fetch the latest AGUI visualization payload."""
-        resp = self._client.get("/agui")
-        resp.raise_for_status()
-        return resp.json()
-
-    # ------------------------------------------------------------------ #
-    # Domain tool wrappers                                                 #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Domain tool wrappers (9 tools)
+    # ------------------------------------------------------------------
 
     def review_alert(self, alert_id: Optional[str] = None) -> Dict[str, Any]:
         params = {"alert_id": alert_id} if alert_id else {}
@@ -120,6 +131,9 @@ class AMLEnvironmentClient:
     def check_source_of_funds(self, transaction_id: str) -> Dict[str, Any]:
         return self.step("check_source_of_funds", parameters={"transaction_id": transaction_id})
 
+    def check_market_price(self, commodity: str) -> Dict[str, Any]:
+        return self.step("check_market_price", parameters={"commodity": commodity})
+
     def assess_risk(self, customer_id: str) -> Dict[str, Any]:
         return self.step("assess_risk", parameters={"customer_id": customer_id})
 
@@ -129,24 +143,28 @@ class AMLEnvironmentClient:
         typology: str,
         entities_involved: List[str],
     ) -> Dict[str, Any]:
-        return self.step(
-            "file_sar",
-            parameters={
-                "findings": findings,
-                "typology": typology,
-                "entities_involved": entities_involved,
-            },
-        )
+        return self.step("file_sar", parameters={
+            "findings": findings,
+            "typology": typology,
+            "entities_involved": entities_involved,
+        })
 
-    def close_alert(self, reason: str, findings: Optional[List[str]] = None) -> Dict[str, Any]:
-        return self.step("close_alert", parameters={"reason": reason, "findings": findings or []})
+    def close_alert(
+        self,
+        reason: str,
+        findings: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        return self.step("close_alert", parameters={
+            "reason": reason,
+            "findings": findings or [],
+        })
 
-    # ------------------------------------------------------------------ #
-    # OS-Mechanic tool wrappers                                            #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # OS-Mechanic tool wrappers (6 tools)
+    # ------------------------------------------------------------------
 
     def write_to_case_file(self, content: str) -> Dict[str, Any]:
-        """Page data to the persistent case file (Virtual Memory → Disk)."""
+        """Page important findings to persistent disk storage."""
         return self.step("write_to_case_file", parameters={"content": content})
 
     def request_wire_trace(
@@ -154,7 +172,7 @@ class AMLEnvironmentClient:
         entity_id: Optional[str] = None,
         transaction_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Request an async wire trace (Interrupt mechanic)."""
+        """Enqueue an async background trace. Returns a job_id + ETA."""
         params: Dict[str, Any] = {}
         if entity_id:
             params["entity_id"] = entity_id
@@ -163,7 +181,7 @@ class AMLEnvironmentClient:
         return self.step("request_wire_trace", parameters=params)
 
     def retrieve_async_result(self, job_id: str) -> Dict[str, Any]:
-        """Retrieve the result of a completed async job."""
+        """Retrieve a completed async job result."""
         return self.step("retrieve_async_result", parameters={"job_id": job_id})
 
     def search_compliance_manual(
@@ -172,24 +190,19 @@ class AMLEnvironmentClient:
         category: Optional[str] = None,
         max_results: int = 3,
     ) -> Dict[str, Any]:
-        """Search the compliance intranet for rules (Kernel Update prep)."""
-        params: Dict[str, Any] = {"query": query}
+        """Search the compliance manual for AML rules."""
+        params: Dict[str, Any] = {"query": query, "max_results": max_results}
         if category:
             params["category"] = category
-        params["max_results"] = max_results
         return self.step("search_compliance_manual", parameters=params)
 
     def update_system_prompt(self, rule: str) -> Dict[str, Any]:
-        """Inject a compliance rule into the agent's kernel directives."""
+        """Inject a compliance rule into the active kernel directives."""
         return self.step("update_system_prompt", parameters={"rule": rule})
 
-    def check_market_price(self, commodity: str) -> Dict[str, Any]:
-        """Get market price for a commodity (TBML detection)."""
-        return self.step("check_market_price", parameters={"commodity": commodity})
-
-    # ------------------------------------------------------------------ #
-    # Context manager                                                      #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
 
     def __enter__(self) -> "AMLEnvironmentClient":
         return self

@@ -6,206 +6,113 @@ colorTo: green
 sdk: docker
 app_port: 8000
 ---
-# AML Investigation Environment for Meta-PyTorch-Hackathon
+# Memex: The OS-Agent Benchmark
 
-An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation.
+An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation — built for the **Meta / Hugging Face OpenEnv Hackathon**.
 
-An agent acts as a financial crime compliance investigator: it receives a transaction monitoring alert and must use structured tools to gather evidence and decide whether to **file a SAR** (Suspicious Activity Report) or **close the alert** as a false positive.
-
----
-
-## 🎯 Why This Matters
-
-Most LLM benchmarks evaluate models on static question-answering or single-turn generation. **LarpLegends** tests something fundamentally harder: **multi-step, tool-augmented reasoning under domain constraints** — the exact capability that separates a language model from a production-grade autonomous agent.
-
-Anti-Money Laundering is the ideal testbed because it demands every capability that current benchmarks leave unmeasured:
-
-| Capability Tested | Why It's Hard |
-|:---|:---|
-| **Sequential Decision-Making** | The agent must plan a multi-phase investigation (triage → due diligence → network analysis → determination) where each step's output informs the next. There is no single "correct prompt." |
-| **Contextual Tool Selection** | Nine domain-specific tools with overlapping use cases. The agent must select the *highest-information-gain* tool at each step, not just follow a script. |
-| **Cross-Reference Reasoning** | Detecting layering requires connecting entity A's beneficial owner to entity B's PEP status — information scattered across multiple tool outputs that must be synthesized. |
-| **Calibrated Terminal Judgment** | The agent makes an irreversible, graded decision (file SAR vs. close alert). Premature or poorly justified decisions are penalized by a deterministic rubric. |
-| **Efficiency Under Budget** | A step-count budget creates a natural efficiency pressure. Redundant tool calls are penalized, forcing the agent to maximize marginal evidence per action. |
-
-Real-world AML compliance costs global financial institutions **over $274 billion annually** (LexisNexis 2023). Even a marginal improvement in investigator efficiency or accuracy has outsized impact. This environment provides a repeatable, deterministic benchmark to measure exactly that.
-
----
-
-## 🏗️ Architecture Deep Dive
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        INFERENCE LOOP                          │
-│  ┌──────────┐    ┌──────────────┐    ┌───────────────────────┐ │
-│  │ LLM Call │───▶│ JSON Parser  │───▶│ HTTP POST /step       │ │
-│  │ (ReAct)  │    │ (tool,params)│    │ {tool, parameters}    │ │
-│  └────▲─────┘    └──────────────┘    └──────────┬────────────┘ │
-│       │                                         │              │
-│       │    ┌────────────────────────────────┐    │              │
-│       └────│ Observation + Reward + Done    │◀───┘              │
-│            └────────────────────────────────┘                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    ENVIRONMENT SERVER (FastAPI)                 │
-│                                                                │
-│  POST /reset ──▶ Load Scenario ──▶ Initial Observation         │
-│  POST /step  ──▶ Route to Handler ──▶ Update State ──▶ Reward  │
-│  GET  /state ──▶ Serialize AMLState                            │
-│                                                                │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                  AMLEnvironment Core                      │  │
-│  │                                                          │  │
-│  │  9 Tool Handlers ──▶ Scenario Data Layer (per-task)      │  │
-│  │  Redundancy Detector (MD5 call hashing)                  │  │
-│  │  Step Budget Enforcer (MAX_STEPS = 25)                   │  │
-│  │                                                          │  │
-│  │  ┌────────────────────────────────────────────────────┐  │  │
-│  │  │              AMLGrader (Deterministic)             │  │  │
-│  │  │                                                    │  │  │
-│  │  │  Decision Accuracy     ████████████░░  0.30        │  │  │
-│  │  │  Typology Match        ██████░░░░░░░░  0.15        │  │  │
-│  │  │  Evidence Coverage     ██████████░░░░  0.25        │  │  │
-│  │  │  Entity F1 Score       ██████░░░░░░░░  0.15        │  │  │
-│  │  │  Step Efficiency       ██████░░░░░░░░  0.15        │  │  │
-│  │  └────────────────────────────────────────────────────┘  │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Key Design Decisions:**
-- **Stateful, episodic RL loop** — the environment tracks evidence flags, accumulated reward, and call history across steps within a single episode, enabling rich intermediate reward shaping.
-- **Deterministic grading** — no LLM-as-judge. Scores are computed via exact-match decision checks, keyword-overlap findings matching with semantic aliases, and precision/recall F1 over flagged entities.
-- **Dual-mode server** — automatically uses `openenv-core` when available for full OpenEnv compatibility, gracefully degrades to standalone FastAPI for local development and HuggingFace Spaces deployment.
+Memex tests whether an LLM can function as a **Turing-complete Operating System** over long-horizon tasks: managing a finite context window (Virtual Memory), handling asynchronous background tasks (Interrupts), and self-improving its own decision rules (Kernel Updates) — all while solving complex financial crimes.
 
 ---
 
 ## 🎯 Why This Matters
 
-Most LLM benchmarks evaluate models on static question-answering or single-turn generation. **LarpLegends** tests something fundamentally harder: **multi-step, tool-augmented reasoning under domain constraints** — the exact capability that separates a language model from a production-grade autonomous agent.
-
-Anti-Money Laundering is the ideal testbed because it demands every capability that current benchmarks leave unmeasured:
+Most LLM benchmarks evaluate models on static QA or single-turn generation. **Memex** tests something fundamentally harder: **multi-step reasoning under OS-level resource constraints** — the exact capability gap that separates a language model from a production-grade autonomous agent.
 
 | Capability Tested | Why It's Hard |
 |:---|:---|
-| **Sequential Decision-Making** | The agent must plan a multi-phase investigation (triage → due diligence → network analysis → determination) where each step's output informs the next. There is no single "correct prompt." |
-| **Contextual Tool Selection** | Nine domain-specific tools with overlapping use cases. The agent must select the *highest-information-gain* tool at each step, not just follow a script. |
-| **Cross-Reference Reasoning** | Detecting layering requires connecting entity A's beneficial owner to entity B's PEP status — information scattered across multiple tool outputs that must be synthesized. |
-| **Calibrated Terminal Judgment** | The agent makes an irreversible, graded decision (file SAR vs. close alert). Premature or poorly justified decisions are penalized by a deterministic rubric. |
-| **Efficiency Under Budget** | A step-count budget creates a natural efficiency pressure. Redundant tool calls are penalized, forcing the agent to maximize marginal evidence per action. |
+| **Virtual Memory Management** | The agent's context window holds only the last 2 observations. Older data is evicted. The agent must `write_to_case_file` to page critical findings to disk before eviction. |
+| **Interrupt Handling** | Background wire traces take 2–4 steps. The agent must interleave other investigation work while waiting, then retrieve results at the right time. |
+| **Self-Improvement** | The agent starts with basic directives. It must search a compliance manual and inject relevant rules into its own system prompt (kernel update). |
+| **Sequential Decision-Making** | A 9-phase investigation protocol — each step's output informs the next. No single "correct prompt." |
+| **Contextual Tool Selection** | 15 tools with overlapping use cases. The agent must maximize information gain per step under a 25-step budget. |
+| **Calibrated Terminal Judgment** | An irreversible, graded decision (file SAR vs. close alert). Premature or poorly justified decisions are heavily penalized. |
 
-Real-world AML compliance costs global financial institutions **over $274 billion annually** (LexisNexis 2023). Even a marginal improvement in investigator efficiency or accuracy has outsized impact. This environment provides a repeatable, deterministic benchmark to measure exactly that.
+Real-world AML compliance costs global financial institutions **over $274 billion annually** (LexisNexis 2023). This environment provides a repeatable, deterministic benchmark to measure agent reasoning under realistic constraints.
 
 ---
 
-## 🏗️ Architecture Deep Dive
+## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        INFERENCE LOOP                          │
-│  ┌──────────┐    ┌──────────────┐    ┌───────────────────────┐ │
-│  │ LLM Call │───▶│ JSON Parser  │───▶│ HTTP POST /step       │ │
-│  │ (ReAct)  │    │ (tool,params)│    │ {tool, parameters}    │ │
-│  └────▲─────┘    └──────────────┘    └──────────┬────────────┘ │
-│       │                                         │              │
-│       │    ┌────────────────────────────────┐    │              │
-│       └────│ Observation + Reward + Done    │◀───┘              │
-│            └────────────────────────────────┘                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    ENVIRONMENT SERVER (FastAPI)                 │
-│                                                                │
-│  POST /reset ──▶ Load Scenario ──▶ Initial Observation         │
-│  POST /step  ──▶ Route to Handler ──▶ Update State ──▶ Reward  │
-│  GET  /state ──▶ Serialize AMLState                            │
-│                                                                │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                  AMLEnvironment Core                      │  │
-│  │                                                          │  │
-│  │  9 Tool Handlers ──▶ Scenario Data Layer (per-task)      │  │
-│  │  Redundancy Detector (MD5 call hashing)                  │  │
-│  │  Step Budget Enforcer (MAX_STEPS = 25)                   │  │
-│  │                                                          │  │
-│  │  ┌────────────────────────────────────────────────────┐  │  │
-│  │  │              AMLGrader (Deterministic)             │  │  │
-│  │  │                                                    │  │  │
-│  │  │  Decision Accuracy     ████████████░░  0.30        │  │  │
-│  │  │  Typology Match        ██████░░░░░░░░  0.15        │  │  │
-│  │  │  Evidence Coverage     ██████████░░░░  0.25        │  │  │
-│  │  │  Entity F1 Score       ██████░░░░░░░░  0.15        │  │  │
-│  │  │  Step Efficiency       ██████░░░░░░░░  0.15        │  │  │
-│  │  └────────────────────────────────────────────────────┘  │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     INFERENCE LOOP                          │
+│  ┌──────────┐    ┌────────────┐    ┌─────────────────────┐  │
+│  │ LLM Call │───▶│ JSON Parse │───▶│ POST /step          │  │
+│  │ (ReAct)  │    │ tool+params│    │ {tool, parameters}  │  │
+│  └────▲─────┘    └────────────┘    └──────────┬──────────┘  │
+│       │                                       │             │
+│       │   ┌──────────────────────────────┐    │             │
+│       └───│ Observation + Reward + AGUI  │◀───┘             │
+│           └──────────────────────────────┘                  │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              ENVIRONMENT SERVER (FastAPI)                    │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │               AMLEnvironment + StateManager           │  │
+│  │                                                       │  │
+│  │  15 Tool Handlers ──▶ Procedural Scenario Data        │  │
+│  │  OS Mechanics:                                        │  │
+│  │    • RAM (2-slot context) + Disk (persistent pages)   │  │
+│  │    • Async Queue (wire traces with ETAs)              │  │
+│  │    • Kernel (mutable system prompt directives)        │  │
+│  │                                                       │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │          AMLGrader (Dense Rewards)              │  │  │
+│  │  │                                                 │  │  │
+│  │  │  Per-Step: cost, redundancy, page faults,       │  │  │
+│  │  │           async timeouts, disk writes, kernel   │  │  │
+│  │  │  Terminal: decision + typology + findings F1    │  │  │
+│  │  │           + entity F1 + efficiency → [-1, +1]   │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │         Procedural Scenario Generator                 │  │
+│  │                                                       │  │
+│  │  3 Typologies × 3 Difficulties = 9 combos            │  │
+│  │  Unique entity IDs per episode (anti-memorization)    │  │
+│  │  Noise injection scales with difficulty               │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 **Key Design Decisions:**
-- **Stateful, episodic RL loop** — the environment tracks evidence flags, accumulated reward, and call history across steps within a single episode, enabling rich intermediate reward shaping.
-- **Deterministic grading** — no LLM-as-judge. Scores are computed via exact-match decision checks, keyword-overlap findings matching with semantic aliases, and precision/recall F1 over flagged entities.
-- **Dual-mode server** — automatically uses `openenv-core` when available for full OpenEnv compatibility, gracefully degrades to standalone FastAPI for local development and HuggingFace Spaces deployment.
+- **Procedural generation** — every `reset()` creates a fresh scenario with unique entity IDs, preventing memorization during RL training.
+- **Dense reward signal** — per-step micro-rewards for OS mechanic usage (disk writes, kernel updates) plus terminal composite score for investigation quality.
+- **Deterministic grading** — no LLM-as-judge. Scores use exact-match checks, keyword-overlap with semantic aliases, and precision/recall F1.
+- **Dual-mode server** — uses `openenv-core` when available, gracefully degrades to standalone FastAPI.
 
 ---
 
-## Problem Statement: Meta PyTorch Hackathon
-
-The **AML Investigation Environment** is a specialized reinforcement learning (RL) environment designed to bridge the gap between Large Language Models (LLMs) and real-world financial compliance tasks. We are building a "Flight Simulator" for financial investigators to see if AI agents can navigate complex data to catch money laundering accurately and efficiently.
-
-### 1. The Core Objective: "Agent as Investigator"
-We are simulating a high-stakes environment where an AI agent takes on the role of a **Financial Crime Compliance Investigator**.
-*   **The Input:** A "Transaction Monitoring Alert"—a piece of potentially suspicious financial activity flagged by an automated system.
-*   **The Task:** The agent must perform a multi-step investigation using structured tools to gather evidence.
-*   **The Decision:** The agent must eventually choose one of two terminal actions: `file_sar` (if suspicious) or `close_alert` (if legitimate).
-
-### 2. The Technical Problem: Tool-Use & Reasoning
-This project tests an agent's ability for **sequential decision-making** and **contextual tool use**. 
-*   **Standardization:** All investigation tools (KYC lookups, transaction queries, watchlist screening, and network tracing) are exposed via an OpenEnv-compatible HTTP API.
-*   **Justification:** The agent is required to provide **structured evidence** (findings, typologies, and involved entities) to justify its final decision.
-
-### 3. Specific Investigation Scenarios
-The environment includes three distinct levels of difficulty, testing different money laundering typologies:
-
-| Level | Problem Type | Objective |
-| :--- | :--- | :--- |
-| **Easy** | **Structuring** | Identifying patterns of cash deposits just below the \$10,000 reporting threshold (e.g., "smurfing"). |
-| **Medium** | **Layering** | Tracing funds fanning out through multiple shell companies to obscure their origin. |
-| **Hard** | **Trade-Based ML** | Detecting price manipulation (over/under-invoicing) in international trade to move value across borders. |
-
-### 4. Success Metrics (Grading Schema)
-Success is measured not just by the final decision, but by the **quality and efficiency of the investigation**:
-*   **Precision/Recall:** Accuracy in identifying specific involved entities.
-*   **Typology Accuracy:** Correct identification of the specific fraud mechanism.
-*   **Efficiency:** Solving the case in the fewest possible steps without redundant tool calls.
-*   **Evidence Coverage:** Finding critical flags (e.g., PEP status, shared addresses, or market price aberrations).
-
----
 ## Project Structure
 
 ```
 .
-├── __init__.py
-├── models.py             # AMLAction, AMLObservation, AMLState (Pydantic BaseModel)
-├── client.py             # AMLEnvironmentClient — HTTP wrapper for the server
-├── inference.py          # Baseline LLM agent inference script
-├── openenv.yaml          # OpenEnv spec (spec_version: 1)
-├── requirements.txt      # Python dependencies
+├── models.py                    # Single source of truth for all Pydantic types
+├── state_manager.py             # OS mechanics: RAM, Disk, Async Queue, Kernel
+├── client.py                    # HTTP client with all 15 tool wrappers
+├── inference.py                 # ReAct agent inference loop (OS-aware)
+├── train_ppo.py                 # Custom PPO trainer (T4-optimized, Unsloth + LoRA)
+├── demo_eval.py                 # 1MDB demo with AGUI replay capture
+├── openenv.yaml                 # OpenEnv spec
+├── Dockerfile                   # Container for HF Spaces deployment
 ├── scenarios/
-│   ├── __init__.py
-│   ├── base.py           # BaseScenario ABC
-│   ├── easy.py           # Task 1: Structuring detection
-│   ├── medium.py         # Task 2: Layering through shell companies
-│   └── hard.py           # Task 3: Trade-based money laundering
+│   ├── __init__.py              # get_scenario() registry
+│   ├── base.py                  # BaseScenario ABC
+│   ├── procedural_generator.py  # Dynamic POMDP graph builder
+│   └── compliance_manual.py     # Searchable AML rule corpus
 ├── graders/
 │   ├── __init__.py
-│   └── grader.py         # AMLGrader — deterministic scoring
-└── server/
-    ├── __init__.py
-    ├── app.py            # FastAPI app (OpenEnv-compatible HTTP API)
-    ├── aml_environment.py  # AMLEnvironment core implementation
-    └── Dockerfile
+│   └── grader.py                # Dense reward: per-step + terminal scoring
+├── server/
+│   ├── __init__.py
+│   ├── app.py                   # FastAPI server (OpenEnv-compatible)
+│   └── aml_environment.py       # Core environment (15 tools + OS mechanics)
+└── tests/
+    └── test_smoke.py            # 7 end-to-end smoke tests
 ```
 
 ---
@@ -224,9 +131,7 @@ pip install -r requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
-The server starts at `http://localhost:8000`.
-
-### 3. Verify it's running
+### 3. Verify
 
 ```bash
 curl http://localhost:8000/health
@@ -244,179 +149,87 @@ export AML_ENV_URL="http://localhost:8000"
 python inference.py
 ```
 
----
+### 5. Run smoke tests
 
-## HTTP API
-
-All endpoints are OpenEnv-compatible.
-
-### `GET /health`
-```json
-{"status": "ok", "env": "aml_investigation_env"}
-```
-
-### `POST /reset`
-Reset the environment and start a new episode.
-
-**Request body:**
-```json
-{
-  "task_id": "easy",     // "easy" | "medium" | "hard"
-  "seed": null,           // optional int
-  "episode_id": null      // optional string
-}
-```
-
-**Response:**
-```json
-{
-  "tool_result": {"alert": {...}},
-  "available_tools": ["review_alert", "get_customer_profile", ...],
-  "message": "Episode started. Alert ALERT-2024-0042 assigned.",
-  "done": false,
-  "reward": null,
-  "metadata": {"episode_id": "...", "task_id": "easy", "step": 0}
-}
-```
-
-### `POST /step`
-Execute a tool action.
-
-**Request body:**
-```json
-{
-  "tool": "review_alert",
-  "parameters": {},
-  "metadata": {},
-  "timeout_s": null
-}
-```
-
-**Response:**
-```json
-{
-  "tool_result": {...},
-  "available_tools": [...],
-  "message": "...",
-  "done": false,
-  "reward": 0.05,
-  "metadata": {"step": 1}
-}
-```
-
-### `GET /state`
-Return the current state snapshot.
-
-```json
-{
-  "episode_id": "abc-123",
-  "step_count": 3,
-  "task_id": "easy",
-  "alert_reviewed": true,
-  "customer_profiled": true,
-  "transactions_queried": false,
-  ...
-}
+```bash
+python tests/test_smoke.py
+# → 7/7 tests passed ✓
 ```
 
 ---
 
-## Available Tools
+## Available Tools (15)
+
+### Domain Investigation Tools (9)
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `review_alert` | `alert_id` (optional) | Get full alert details |
 | `get_customer_profile` | `customer_id` | Get KYC profile |
-| `query_transactions` | `customer_id`, `date_from`, `date_to`, `min_amount`, `max_amount` | Get transaction history |
-| `check_watchlist` | `entity_name`, `list_type` | Screen against OFAC/PEP/UN lists |
-| `trace_network` | `entity_id`, `depth` (1 or 2) | Trace connected entities |
+| `query_transactions` | `customer_id`, filters | Get transaction history |
+| `check_watchlist` | `entity_name`, `list_type` | Screen against OFAC/PEP/UN |
+| `trace_network` | `entity_id`, `depth` | Trace connected entities |
 | `check_source_of_funds` | `transaction_id` | Verify source documentation |
+| `check_market_price` | `commodity` | Compare invoiced vs market prices |
 | `assess_risk` | `customer_id` | Get computed risk score |
 | `file_sar` | `findings`, `typology`, `entities_involved` | **TERMINAL**: File a SAR |
 | `close_alert` | `reason`, `findings` | **TERMINAL**: Close as false positive |
 
----
+### OS-Mechanic Tools (6)
 
-## Tasks
-
-### Task 1: Structuring Detection (`task_id="easy"`)
-- **Customer**: John Doe (CUST001), individual, retail banking
-- **Pattern**: 5 cash deposits of ~$9,500 each over 5 days — all below the $10,000 CTR threshold
-- **Ground truth**: `file_sar`, typology = `structuring`
-- **Key evidence**: deposit pattern, no cash-intensive occupation, no source documentation
-
-### Task 2: Layering Through Shell Companies (`task_id="medium"`)
-- **Customer**: GlobalTrade LLC (CUST002), 6-month-old import/export company
-- **Pattern**: $500K inbound → immediate fan-out to 3 entities within 24 hours
-- **Key clues**: ENT_B and ENT_C share a registered address; ENT_D's director is a PEP
-- **Ground truth**: `file_sar`, typology = `layering`, entities = CUST002, ENT_A, ENT_B, ENT_C, ENT_D (NOT ENT_E)
-
-### Task 3: Trade-Based Money Laundering (`task_id="hard"`)
-- **Customer**: NovaTech Industries (CUST003), electronics importer
-- **Pattern**: 12 payments to OceanPrime Exports (FATF jurisdiction) at $50K/unit vs $12K market price
-- **Key clues**: ENT_F's beneficial owner (Marcus Webb) is brother-in-law of NovaTech's director; reversed transaction; unexplained $200K inbound
-- **Ground truth**: `file_sar`, typology = `trade_based_ml`, entities = CUST003, ENT_F, Marcus Webb
+| Tool | Parameters | OS Concept | Reward |
+|------|-----------|------------|--------|
+| `write_to_case_file` | `content` | Virtual Memory → Disk Page | +0.10 |
+| `request_wire_trace` | `entity_id` or `transaction_id` | Interrupt → Async Enqueue | — |
+| `retrieve_async_result` | `job_id` | Interrupt → Result Fetch | -0.10 if premature |
+| `search_compliance_manual` | `query`, `category`, `max_results` | Kernel → Rule Lookup | — |
+| `update_system_prompt` | `rule` | Kernel → Meta-Injection | +0.15 |
 
 ---
 
-## Grading
+## Reward System
 
-Final scores are computed by `AMLGrader.grade()`:
+### Per-Step Rewards
+| Event | Reward |
+|-------|--------|
+| Action cost (every step) | -0.02 |
+| Redundant call (same tool+params) | -0.03 |
+| Unique tool call | +0.03 |
+| Page fault (reference evicted data not on disk) | -0.05 |
+| Async timeout (premature retrieval) | -0.10 |
+| Successful disk write | +0.10 |
+| Kernel meta-injection | +0.15 |
 
+### Terminal Score [-1.0, +1.0]
 | Component | Weight |
 |-----------|--------|
-| Decision correctness | 0.30 |
-| Typology correctness | 0.15 |
-| Key findings coverage | 0.25 |
+| Decision correctness (file_sar / close_alert) | 0.30 |
+| Typology identification | 0.15 |
+| Key findings coverage (semantic matching) | 0.25 |
 | Entity precision/recall (F1) | 0.15 |
-| Efficiency (step count vs optimal) | 0.15 |
-| **Total** | **1.00** |
-
-**Step rewards:**
-- `+0.05` for each unique tool call
-- `-0.02` for redundant calls (same tool + same parameters)
+| Step efficiency (vs optimal path) | 0.15 |
 
 ---
 
-## Action & Observation Spaces
+## Scenario Generation
 
-**Action Space** (`AMLAction`):
-The agent outputs an action containing:
-- `tool` (str): The name of the investigation tool to call.
-- `parameters` (dict): Key-value pairs of arguments required by the tool.
+The **procedural generator** creates a fresh POMDP graph on every `reset()`:
 
-**Observation Space** (`AMLObservation`):
-At each step, the environment returns:
-- `tool_result` (dict): Structured data payload from the executed tool.
-- `available_tools` (list): The list of valid tools the agent can use next.
-- `message` (str): Human-readable feedback on the tool execution.
-- `reward` (float): Partial reward (e.g., small positive for unique tool calls, negative for redundant calls).
-- `done` (bool): Whether the episode has terminated.
+| Typology | What It Generates |
+|----------|-------------------|
+| **Structuring** | Multiple sub-threshold cash deposits ($9K–$9.9K), no cash-intensive occupation |
+| **Layering** | Fan-out through shell companies, shared addresses, PEP connections, rapid transfer chains |
+| **Trade-Based ML** | Over/under-invoiced trade transactions, market price aberrations, related-party beneficial ownership |
 
----
-
-## Tasks & Baseline Scores
-
-**Baseline evaluation** using `gpt-4o-mini` (temperature = 0.0, 3 runs) yields the following reproducible scores:
-
-| Task | Difficulty | Baseline Score | Success Rate | Expected Behavior for Optimality |
-|------|-----------|----------------|--------------|--------------------------------|
-| **Task 1: Structuring Detection** (`easy`) | Easy | 0.95 | 100% | The agent successfully calls `file_sar` with `structuring` typology and accurately extracts evidence. |
-| **Task 2: Layering Through Shell Companies** (`medium`) | Medium | 0.82 | 85% | Agent traces network and watchlists flags, but may occasionally over-flag or miss specific intermediary companies. |
-| **Task 3: Trade-Based Money Laundering** (`hard`) | Hard | 0.65 | 50% | The agent struggles with extracting market price aberrations and often closes the alert as a false positive, resulting in lower scores. |
-
-**Average Overall Baseline Score:** ~0.80
-
-(To reproduce these base line scores, run `python inference.py` with `MODEL_NAME="gpt-4o-mini"`.)
+Each difficulty level (easy/medium/hard) scales the number of decoy entities, noise transactions, and network complexity. Entity IDs are unique per episode to prevent memorization during RL training.
 
 ---
 
 ## Docker
 
 ```bash
-# Build the Docker image from the root directory
-docker build -t aml-env .
-docker run -p 8000:8000 aml-env
+docker build -t memex-env .
+docker run -p 8000:8000 memex-env
 ```
 
 ---
@@ -426,17 +239,20 @@ docker run -p 8000:8000 aml-env
 ```python
 from client import AMLEnvironmentClient
 
-with AMLEnvironmentClient("http://localhost:8000") as client:
-    obs = client.reset(task_id="easy")
-    obs = client.review_alert()
-    obs = client.get_customer_profile("CUST001")
-    obs = client.query_transactions("CUST001")
-    obs = client.file_sar(
+with AMLEnvironmentClient() as c:
+    obs = c.reset(task_id="easy")
+    obs = c.review_alert()
+    obs = c.get_customer_profile("CUST001")
+    obs = c.write_to_case_file("PEP confirmed for CUST001")
+    obs = c.search_compliance_manual("structuring threshold")
+    obs = c.update_system_prompt("CTR threshold is $10,000")
+    obs = c.query_transactions("CUST001")
+    obs = c.file_sar(
         findings=["multiple_sub_threshold_deposits", "no_source_documentation"],
         typology="structuring",
         entities_involved=["CUST001"],
     )
-    print(obs["tool_result"]["final_score"])
+    print(obs)
 ```
 
 ---

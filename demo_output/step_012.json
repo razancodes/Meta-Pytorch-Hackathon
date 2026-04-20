@@ -1,6 +1,6 @@
 {
   "step_number": 12,
-  "timestamp": 1776679765.3103714,
+  "timestamp": 1776696027.0963707,
   "action": {
     "tool": "get_customer_profile",
     "parameters": {
@@ -33,7 +33,7 @@
     "ram_usage": {
       "capacity": "2/2 observations",
       "active_context": [
-        "Step 11 [request_wire_trace]: Wire trace enqueued as REQ-001 (ETA: 4 steps). Continue investigating \u2014 do NOT wait idle.",
+        "Step 11 [request_wire_trace]: Wire trace enqueued as REQ-001 (ETA: 3 steps). Continue investigating \u2014 do NOT wait idle.",
         "Step 12 [get_customer_profile]: Customer profile retrieved for ENT-ARBL-001."
       ]
     },
@@ -45,7 +45,7 @@
       {
         "id": "REQ-001",
         "tool": "request_wire_trace",
-        "eta_steps": 3,
+        "eta_steps": 2,
         "status": "pending"
       }
     ],
