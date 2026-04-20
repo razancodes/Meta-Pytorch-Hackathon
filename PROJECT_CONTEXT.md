@@ -26,7 +26,8 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | **Server** | `server/app.py` | FastAPI HTTP server (dual-mode: OpenEnv / standalone) |
 | **Client** | `client.py` | HTTP client with all 15 tool wrappers |
 | **Inference** | `inference.py` | ReAct agent loop with OS-mechanic awareness |
-| **PPO Trainer** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
+| **PPO Trainer (T4)** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
+| **PPO Trainer (70B)** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster |
 | **Demo** | `demo_eval.py` | 1MDB-inspired demo with AGUI replay capture |
 | **Tests** | `tests/test_smoke.py` | 7 end-to-end smoke tests |
 
@@ -161,6 +162,51 @@ The demo runs in two modes:
 2. **LLM-driven** (`--model checkpoints/best`): The trained agent investigates the 1MDB case autonomously, proving that procedural training transfers to real-world scenarios.
 
 Both modes capture AGUI state for frontend replay, giving judges a cinematic walkthrough of the agent managing its own operating system while solving a $681M money laundering case.
+
+---
+
+## 70B Distributed Training Pipeline (A100 Cluster)
+
+The scaling pivot from 8B/T4 to 70B/multi-A100 is implemented in `train_ppo_70b.py`.
+
+### Why DeepSpeed ZeRO-3?
+
+| Component | 70B Memory | ZeRO-3 (4× A100-80GB) |
+|-----------|-----------|------------------------|
+| Model weights (4-bit NF4) | ~35 GB | Sharded: ~9 GB/GPU |
+| LoRA adapters (r=32, α=64) | ~150 MB | Replicated on each GPU |
+| Optimizer states (fp32 AdamW) | ~280 GB | Sharded: ~70 GB/GPU |
+| Gradients (bf16) | ~140 GB | Sharded: ~35 GB/GPU |
+| **Peak per-GPU** | — | **~50 GB / 80 GB** |
+
+ZeRO-3 shards **all three** (parameters + optimizer + gradients) across GPUs, making 70B feasible on 4× A100-80GB with comfortable headroom.
+
+### Architectural Decisions
+
+1. **Rank-0 Environment Interaction:** Only rank 0 runs the AML environment. Trajectories (tokenized prompts, responses, rewards) are broadcast to all ranks via `torch.distributed.broadcast_object_list()`. This avoids N redundant environment instances.
+
+2. **`disable_adapter()` Under ZeRO-3:** The KL trick works because LoRA operates at the module level — when ZeRO-3 gathers parameters for a forward pass, disabling adapters simply means the gathered weights skip LoRA additions. No architectural conflict.
+
+3. **DeepSpeed Engine Backward:** Replaces manual `loss.backward()` + `optimizer.step()` with `engine.backward(loss)` + `engine.step()`. DeepSpeed handles gradient accumulation, all-reduce, and gradient clipping internally.
+
+4. **Distributed Checkpointing:** Uses `engine.save_checkpoint()` which saves sharded optimizer states per-rank. Only rank 0 saves the tokenizer.
+
+### Launch Commands
+
+```bash
+# 4-GPU single-node
+deepspeed --num_gpus 4 train_ppo_70b.py --iterations 50 --episodes 2
+
+# 8-GPU multi-node (2 nodes × 4 GPUs)
+deepspeed --num_gpus 4 --num_nodes 2 --hostfile hosts.txt \
+  train_ppo_70b.py --iterations 50 --episodes 2
+
+# With CPU offloading (lower VRAM, slower)
+deepspeed --num_gpus 2 train_ppo_70b.py --offload-optimizer --offload-params
+
+# Dry-run (2 iterations, 1 episode)
+deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
+```
 
 ---
 

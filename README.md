@@ -1,89 +1,214 @@
 ---
 title: MetaHack
-emoji: 🏢
-colorFrom: blue
-colorTo: green
+emoji: 🧠
+colorFrom: purple
+colorTo: blue
 sdk: docker
 app_port: 8000
 ---
-# Memex: The OS-Agent Benchmark
 
-An [OpenEnv](https://github.com/openenv/openenv)-compatible reinforcement learning environment for Anti-Money Laundering (AML) compliance investigation — built for the **Meta / Hugging Face OpenEnv Hackathon**.
+<div align="center">
 
-Memex tests whether an LLM can function as a **Turing-complete Operating System** over long-horizon tasks: managing a finite context window (Virtual Memory), handling asynchronous background tasks (Interrupts), and self-improving its own decision rules (Kernel Updates) — all while solving complex financial crimes.
+# 🧠 Memex: The OS-Agent Benchmark
+
+### *Can an LLM run its own Operating System?*
+
+**A POMDP environment where language models manage Virtual Memory, handle Interrupts, and self-update their Kernel — all while solving $274B-scale financial crimes.**
+
+[![OpenEnv](https://img.shields.io/badge/OpenEnv-Compatible-blue)](https://github.com/openenv/openenv)
+[![Smoke Tests](https://img.shields.io/badge/tests-7%2F7-brightgreen)]()
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)]()
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)]()
+
+*Built for the Meta / Hugging Face OpenEnv Hackathon*
+
+</div>
 
 ---
 
-## 🎯 Why This Matters
+## The Problem
 
-Most LLM benchmarks evaluate models on static QA or single-turn generation. **Memex** tests something fundamentally harder: **multi-step reasoning under OS-level resource constraints** — the exact capability gap that separates a language model from a production-grade autonomous agent.
+LLM benchmarks test **what a model knows**. We test **what it can manage**.
 
-| Capability Tested | Why It's Hard |
+Real enterprise agents don't just answer questions — they juggle finite attention across hours-long workflows. They must decide what to remember, what to forget, when to wait for slow I/O, and how to improve their own reasoning mid-task.
+
+**Memex** forces an LLM to act as an operating system:
+
+| OS Concept | Implementation | Failure Mode |
+|:-----------|:---------------|:-------------|
+| **Virtual Memory** | Context holds only the last 2 observations. Older data is evicted. | **Page Fault** (-0.05): referencing evicted data not saved to disk |
+| **Interrupts** | Wire traces take 2–4 steps. Agent must interleave other work. | **Async Timeout** (-0.10): retrieving results before completion |
+| **Kernel Updates** | Agent finds AML rules and injects them into its own system prompt. | Missing compliance rules → wrong verdicts |
+
+The obstacle course: **Anti-Money Laundering investigations** — a $274B/year industry where every tool call matters.
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        FRONTEND (Next.js)                           │
+│  ┌───────────────┬──────────────┬──────────────┬─────────────────┐  │
+│  │  RAM Monitor  │ Disk Storage │   Active     │    Kernel       │  │
+│  │  2/2 █████    │ findings...  │  Processes   │   Directives    │  │
+│  │  (evicts old) │ (persistent) │  REQ-001 ✓   │ [BASE] + [INJ]  │  │
+│  └───────────────┴──────────────┴──────────────┴─────────────────┘  │
+│                     ← agui_state JSON per step                      │
+└──────────────────────────────────────────────────────────────────────┘
+                                │
+┌──────────────────────────────────────────────────────────────────────┐
+│                    ENVIRONMENT SERVER (FastAPI)                       │
+│                                                                      │
+│  AMLEnvironment  ────────────  StateManager                          │
+│  15 Tool Handlers              • RAM (2 slots) + Disk               │
+│  Action Routing                • Async Queue (ETAs)                 │
+│  Scenario Data                 • Kernel Directives                  │
+│       │                              │                               │
+│       └──────────  AMLGrader  ◄──────┘                               │
+│                    Per-step: -0.05 PF, +0.10 disk, +0.15 kernel     │
+│                    Terminal:  [-1.0, +1.0] composite score           │
+│                                                                      │
+│  ┌───────────────────────────────────────────────────────────────┐   │
+│  │  Procedural Generator: 3 typologies × 3 difficulties         │   │
+│  │  Unique entity IDs per episode → anti-memorization           │   │
+│  └───────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
+                                │
+┌──────────────────────────────────────────────────────────────────────┐
+│                     TRAINING INFRASTRUCTURE                          │
+│                                                                      │
+│  ┌────────────────────┐    ┌──────────────────────────────────┐     │
+│  │  train_ppo.py      │    │  train_ppo_70b.py                │     │
+│  │  T4 (15GB VRAM)    │    │  A100 × 4-8 (DeepSpeed ZeRO-3)  │     │
+│  │  8B + 4-bit + LoRA │    │  70B + 4-bit + LoRA (r=32)      │     │
+│  │  disable_adapter() │    │  disable_adapter() + sharding    │     │
+│  │  Peak: ~10 GB      │    │  Peak: ~50 GB/GPU               │     │
+│  └────────────────────┘    └──────────────────────────────────┘     │
+│                                                                      │
+│  Step-Level PPO: every tool call gets a reward signal               │
+│  KL via LoRA toggle: no second model copy needed                    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Quick Start
+
+### Run the Environment
+
+```bash
+git clone https://github.com/razancodes/Meta-Pytorch-Hackathon.git
+cd Meta-Pytorch-Hackathon
+pip install -r requirements.txt
+
+# Start environment server
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+
+# Verify
+curl http://localhost:8000/health
+# → {"status": "ok", "env": "aml_investigation_env"}
+
+# Run smoke tests
+python tests/test_smoke.py
+# → 7/7 tests passed ✓
+```
+
+### Run Inference (any OpenAI-compatible LLM)
+
+```bash
+export API_BASE_URL="https://api.openai.com/v1"
+export MODEL_NAME="gpt-4o-mini"
+export HF_TOKEN="sk-..."
+python inference.py
+```
+
+### Train (T4 / Colab / Kaggle)
+
+```bash
+pip install unsloth trl peft wandb
+
+# Dry-run (2 iterations, no GPU needed for env)
+python train_ppo.py --dry-run
+
+# Real training (~2.5 hours on T4)
+python train_ppo.py --iterations 50 --episodes 4
+```
+
+### Train (70B / A100 Cluster)
+
+```bash
+pip install deepspeed unsloth trl peft wandb
+
+# 4× A100-80GB
+deepspeed --num_gpus 4 train_ppo_70b.py \
+  --model meta-llama/Meta-Llama-3.1-70B-Instruct \
+  --iterations 50 --episodes 2
+
+# With CPU offloading (2× A100)
+deepspeed --num_gpus 2 train_ppo_70b.py --offload-optimizer --offload-params
+```
+
+### Run the 1MDB Demo
+
+```bash
+# Scripted (no GPU)
+python demo_eval.py --dry-run
+# → 15 steps, score +1.01, AGUI replay files in demo_output/
+
+# LLM-driven (trained model)
+python demo_eval.py --model checkpoints/best
+```
+
+---
+
+## Tool Roster (15 Tools)
+
+| Domain Tools (9) | OS-Mechanic Tools (6) |
 |:---|:---|
-| **Virtual Memory Management** | The agent's context window holds only the last 2 observations. Older data is evicted. The agent must `write_to_case_file` to page critical findings to disk before eviction. |
-| **Interrupt Handling** | Background wire traces take 2–4 steps. The agent must interleave other investigation work while waiting, then retrieve results at the right time. |
-| **Self-Improvement** | The agent starts with basic directives. It must search a compliance manual and inject relevant rules into its own system prompt (kernel update). |
-| **Sequential Decision-Making** | A 9-phase investigation protocol — each step's output informs the next. No single "correct prompt." |
-| **Contextual Tool Selection** | 15 tools with overlapping use cases. The agent must maximize information gain per step under a 25-step budget. |
-| **Calibrated Terminal Judgment** | An irreversible, graded decision (file SAR vs. close alert). Premature or poorly justified decisions are heavily penalized. |
-
-Real-world AML compliance costs global financial institutions **over $274 billion annually** (LexisNexis 2023). This environment provides a repeatable, deterministic benchmark to measure agent reasoning under realistic constraints.
+| `review_alert` — Alert details | `write_to_case_file` — Page to disk (+0.10) |
+| `get_customer_profile` — KYC data | `request_wire_trace` — Async job (2-4 step ETA) |
+| `query_transactions` — Transaction history | `retrieve_async_result` — Fetch completed job |
+| `check_watchlist` — OFAC/PEP/UN screening | `search_compliance_manual` — Find AML rules |
+| `trace_network` — Entity connections | `update_system_prompt` — Kernel inject (+0.15) |
+| `check_source_of_funds` — Source verification | |
+| `check_market_price` — Trade price comparison | |
+| `assess_risk` — Risk scoring | |
+| `file_sar` / `close_alert` — **Terminal** | |
 
 ---
 
-## 🏗️ Architecture
+## Reward System
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     INFERENCE LOOP                          │
-│  ┌──────────┐    ┌────────────┐    ┌─────────────────────┐  │
-│  │ LLM Call │───▶│ JSON Parse │───▶│ POST /step          │  │
-│  │ (ReAct)  │    │ tool+params│    │ {tool, parameters}  │  │
-│  └────▲─────┘    └────────────┘    └──────────┬──────────┘  │
-│       │                                       │             │
-│       │   ┌──────────────────────────────┐    │             │
-│       └───│ Observation + Reward + AGUI  │◀───┘             │
-│           └──────────────────────────────┘                  │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│              ENVIRONMENT SERVER (FastAPI)                    │
-│                                                             │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │               AMLEnvironment + StateManager           │  │
-│  │                                                       │  │
-│  │  15 Tool Handlers ──▶ Procedural Scenario Data        │  │
-│  │  OS Mechanics:                                        │  │
-│  │    • RAM (2-slot context) + Disk (persistent pages)   │  │
-│  │    • Async Queue (wire traces with ETAs)              │  │
-│  │    • Kernel (mutable system prompt directives)        │  │
-│  │                                                       │  │
-│  │  ┌─────────────────────────────────────────────────┐  │  │
-│  │  │          AMLGrader (Dense Rewards)              │  │  │
-│  │  │                                                 │  │  │
-│  │  │  Per-Step: cost, redundancy, page faults,       │  │  │
-│  │  │           async timeouts, disk writes, kernel   │  │  │
-│  │  │  Terminal: decision + typology + findings F1    │  │  │
-│  │  │           + entity F1 + efficiency → [-1, +1]   │  │  │
-│  │  └─────────────────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────────────────┘  │
-│                                                             │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │         Procedural Scenario Generator                 │  │
-│  │                                                       │  │
-│  │  3 Typologies × 3 Difficulties = 9 combos            │  │
-│  │  Unique entity IDs per episode (anti-memorization)    │  │
-│  │  Noise injection scales with difficulty               │  │
-│  └───────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
+**Per-Step** (dense signal at every tool call):
 
-**Key Design Decisions:**
-- **Procedural generation** — every `reset()` creates a fresh scenario with unique entity IDs, preventing memorization during RL training.
-- **Dense reward signal** — per-step micro-rewards for OS mechanic usage (disk writes, kernel updates) plus terminal composite score for investigation quality.
-- **Deterministic grading** — no LLM-as-judge. Scores use exact-match checks, keyword-overlap with semantic aliases, and precision/recall F1.
-- **Dual-mode server** — uses `openenv-core` when available, gracefully degrades to standalone FastAPI.
+| Event | Reward | OS Concept |
+|-------|--------|-----------|
+| Action cost | -0.02 | — |
+| Redundant call | -0.03 | — |
+| Unique tool | +0.03 | — |
+| Page fault | -0.05 | Virtual Memory |
+| Async timeout | -0.10 | Interrupts |
+| Disk write | +0.10 | Virtual Memory |
+| Kernel injection | +0.15 | Kernel Update |
+
+**Terminal** (composite score → [-1.0, +1.0]):
+
+| Component | Weight | Method |
+|-----------|--------|--------|
+| Decision | 0.30 | Exact match: file_sar vs close_alert |
+| Typology | 0.15 | Exact match: structuring/layering/TBML |
+| Findings | 0.25 | Keyword overlap with semantic aliases |
+| Entities | 0.15 | Precision/Recall F1 |
+| Efficiency | 0.15 | Steps used vs optimal path |
+
+---
+
+## The Gym vs. The Stage
+
+**Training (The Gym):** `procedural_generator.py` creates infinite, unique POMDP scenarios. Entity IDs are randomized per episode — no memorization possible. The agent must learn transferable OS mechanics.
+
+**Presentation (The Stage):** `demo_eval.py` runs a hardcoded scenario inspired by the **1MDB scandal** — $681M in layered wire transfers through shell companies. Judges see the agent managing RAM, firing async traces, and injecting compliance rules while solving a real-world financial crime.
 
 ---
 
@@ -91,182 +216,43 @@ Real-world AML compliance costs global financial institutions **over $274 billio
 
 ```
 .
-├── models.py                    # Single source of truth for all Pydantic types
-├── state_manager.py             # OS mechanics: RAM, Disk, Async Queue, Kernel
-├── client.py                    # HTTP client with all 15 tool wrappers
-├── inference.py                 # ReAct agent inference loop (OS-aware)
-├── train_ppo.py                 # Custom PPO trainer (T4-optimized, Unsloth + LoRA)
-├── demo_eval.py                 # 1MDB demo with AGUI replay capture
-├── openenv.yaml                 # OpenEnv spec
-├── Dockerfile                   # Container for HF Spaces deployment
+├── models.py                    # Pydantic types (single source of truth)
+├── state_manager.py             # OS mechanics engine
+├── client.py                    # HTTP client (15 tool wrappers)
+├── inference.py                 # ReAct agent (OS-aware)
+├── train_ppo.py                 # PPO trainer (T4, 8B)
+├── train_ppo_70b.py             # PPO trainer (A100 cluster, 70B)
+├── demo_eval.py                 # 1MDB demo + AGUI replay
+├── Dockerfile                   # HF Spaces deployment
+├── openenv.yaml                 # OpenEnv contract
 ├── scenarios/
-│   ├── __init__.py              # get_scenario() registry
-│   ├── base.py                  # BaseScenario ABC
-│   ├── procedural_generator.py  # Dynamic POMDP graph builder
-│   └── compliance_manual.py     # Searchable AML rule corpus
+│   ├── procedural_generator.py  # POMDP graph builder
+│   ├── compliance_manual.py     # Searchable rule corpus
+│   └── base.py                  # Scenario ABC
 ├── graders/
-│   ├── __init__.py
-│   └── grader.py                # Dense reward: per-step + terminal scoring
+│   └── grader.py                # Dense reward engine
 ├── server/
-│   ├── __init__.py
-│   ├── app.py                   # FastAPI server (OpenEnv-compatible)
-│   └── aml_environment.py       # Core environment (15 tools + OS mechanics)
+│   ├── app.py                   # FastAPI (OpenEnv-compatible)
+│   └── aml_environment.py       # Core env (15 tools + OS mechanics)
 └── tests/
-    └── test_smoke.py            # 7 end-to-end smoke tests
+    └── test_smoke.py            # 7 end-to-end tests
 ```
-
----
-
-## Quick Start
-
-### 1. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Start the server
-
-```bash
-uvicorn server.app:app --host 0.0.0.0 --port 8000
-```
-
-### 3. Verify
-
-```bash
-curl http://localhost:8000/health
-# → {"status": "ok", "env": "aml_investigation_env"}
-```
-
-### 4. Run inference
-
-```bash
-export API_BASE_URL="https://api.openai.com/v1"
-export MODEL_NAME="gpt-4o-mini"
-export HF_TOKEN="sk-..."
-export AML_ENV_URL="http://localhost:8000"
-
-python inference.py
-```
-
-### 5. Run smoke tests
-
-```bash
-python tests/test_smoke.py
-# → 7/7 tests passed ✓
-```
-
----
-
-## Available Tools (15)
-
-### Domain Investigation Tools (9)
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `review_alert` | `alert_id` (optional) | Get full alert details |
-| `get_customer_profile` | `customer_id` | Get KYC profile |
-| `query_transactions` | `customer_id`, filters | Get transaction history |
-| `check_watchlist` | `entity_name`, `list_type` | Screen against OFAC/PEP/UN |
-| `trace_network` | `entity_id`, `depth` | Trace connected entities |
-| `check_source_of_funds` | `transaction_id` | Verify source documentation |
-| `check_market_price` | `commodity` | Compare invoiced vs market prices |
-| `assess_risk` | `customer_id` | Get computed risk score |
-| `file_sar` | `findings`, `typology`, `entities_involved` | **TERMINAL**: File a SAR |
-| `close_alert` | `reason`, `findings` | **TERMINAL**: Close as false positive |
-
-### OS-Mechanic Tools (6)
-
-| Tool | Parameters | OS Concept | Reward |
-|------|-----------|------------|--------|
-| `write_to_case_file` | `content` | Virtual Memory → Disk Page | +0.10 |
-| `request_wire_trace` | `entity_id` or `transaction_id` | Interrupt → Async Enqueue | — |
-| `retrieve_async_result` | `job_id` | Interrupt → Result Fetch | -0.10 if premature |
-| `search_compliance_manual` | `query`, `category`, `max_results` | Kernel → Rule Lookup | — |
-| `update_system_prompt` | `rule` | Kernel → Meta-Injection | +0.15 |
-
----
-
-## Reward System
-
-### Per-Step Rewards
-| Event | Reward |
-|-------|--------|
-| Action cost (every step) | -0.02 |
-| Redundant call (same tool+params) | -0.03 |
-| Unique tool call | +0.03 |
-| Page fault (reference evicted data not on disk) | -0.05 |
-| Async timeout (premature retrieval) | -0.10 |
-| Successful disk write | +0.10 |
-| Kernel meta-injection | +0.15 |
-
-### Terminal Score [-1.0, +1.0]
-| Component | Weight |
-|-----------|--------|
-| Decision correctness (file_sar / close_alert) | 0.30 |
-| Typology identification | 0.15 |
-| Key findings coverage (semantic matching) | 0.25 |
-| Entity precision/recall (F1) | 0.15 |
-| Step efficiency (vs optimal path) | 0.15 |
-
----
-
-## Scenario Generation
-
-The **procedural generator** creates a fresh POMDP graph on every `reset()`:
-
-| Typology | What It Generates |
-|----------|-------------------|
-| **Structuring** | Multiple sub-threshold cash deposits ($9K–$9.9K), no cash-intensive occupation |
-| **Layering** | Fan-out through shell companies, shared addresses, PEP connections, rapid transfer chains |
-| **Trade-Based ML** | Over/under-invoiced trade transactions, market price aberrations, related-party beneficial ownership |
-
-Each difficulty level (easy/medium/hard) scales the number of decoy entities, noise transactions, and network complexity. Entity IDs are unique per episode to prevent memorization during RL training.
 
 ---
 
 ## Docker
 
 ```bash
-docker build -t memex-env .
-docker run -p 8000:8000 memex-env
+docker build -t memex .
+docker run -p 8000:8000 memex
 ```
 
 ---
 
-## Python Client
+## Further Reading
 
-```python
-from client import AMLEnvironmentClient
-
-with AMLEnvironmentClient() as c:
-    obs = c.reset(task_id="easy")
-    obs = c.review_alert()
-    obs = c.get_customer_profile("CUST001")
-    obs = c.write_to_case_file("PEP confirmed for CUST001")
-    obs = c.search_compliance_manual("structuring threshold")
-    obs = c.update_system_prompt("CTR threshold is $10,000")
-    obs = c.query_transactions("CUST001")
-    obs = c.file_sar(
-        findings=["multiple_sub_threshold_deposits", "no_source_documentation"],
-        typology="structuring",
-        entities_involved=["CUST001"],
-    )
-    print(obs)
-```
-
----
-
-## OpenEnv Spec
-
-```yaml
-spec_version: 1
-name: aml_investigation_env
-type: space
-runtime: fastapi
-app: server.app:app
-port: 8000
-```
+- [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — Full architecture, AGUI data contract, VRAM calculations, 70B scaling analysis
+- [TRAINING.md](TRAINING.md) — Copy-paste Colab/Kaggle cells for T4 training
 
 ---
 
