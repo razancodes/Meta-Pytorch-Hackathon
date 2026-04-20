@@ -1,14 +1,12 @@
 """
-AML Investigation Environment — FastAPI server.
+Memex OS-Agent Benchmark — FastAPI server.
 
 Exposes OpenEnv-compatible HTTP endpoints:
-  POST /reset   → initial observation
-  POST /step    → step observation
+  POST /reset   → initial observation (with AGUI state)
+  POST /step    → step observation (with AGUI state)
   GET  /state   → current state snapshot
+  GET  /agui    → latest AGUI visualization payload
   GET  /health  → {"status": "ok"}
-
-Dual import: if openenv-core is installed, use create_app();
-otherwise fall back to manual FastAPI construction (standalone / HF Spaces mode).
 """
 
 from __future__ import annotations
@@ -16,7 +14,6 @@ from __future__ import annotations
 import sys
 import os
 
-# Make the parent package importable when running from the server/ directory
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
 if _PARENT not in sys.path:
@@ -30,7 +27,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# ---- Dual import: environment ----------------------------------------- #
+# Environment import
 try:
     from .aml_environment import AMLEnvironment
 except ImportError:
@@ -39,27 +36,31 @@ except ImportError:
     except ImportError:
         from server.aml_environment import AMLEnvironment
 
-# ---- Dual import: models ---------------------------------------------- #
+# Models import
 try:
-    from models import AMLAction, AMLObservation, AMLState
+    from models import AMLAction
 except ImportError:
-    from server.models import AMLAction, AMLObservation, AMLState
+    from server.models import AMLAction
 
-# ---- Try openenv create_app first ------------------------------------- #
+# Try openenv create_app first
 _openenv_available = False
 try:
     from openenv.core.env_server.http_server import create_app  # type: ignore
+    from models import AMLObservation
 
     _global_env_for_openenv = AMLEnvironment()
-    app = create_app(lambda: _global_env_for_openenv, AMLAction, AMLObservation, env_name="aml_investigation_env")
+    app = create_app(
+        lambda: _global_env_for_openenv,
+        AMLAction,
+        AMLObservation,
+        env_name="aml_investigation_env",
+    )
     _openenv_available = True
 except ImportError:
     pass
 
-# ---- Standalone FastAPI app (used when openenv-core is not installed) -- #
+# Standalone FastAPI app (fallback when openenv-core is not installed)
 if not _openenv_available:
-
-    # ---- Request / response schemas ----------------------------------- #
 
     class ResetRequest(BaseModel):
         seed: Optional[int] = None
@@ -71,38 +72,14 @@ if not _openenv_available:
         timeout_s: Optional[float] = None
         request_id: Optional[str] = None
 
-    class ObservationResponse(BaseModel):
-        tool_result: Dict[str, Any] = {}
-        available_tools: list = []
-        message: str = ""
-        done: bool = False
-        reward: Optional[float] = None
-        metadata: Dict[str, Any] = {}
-
-    class StateResponse(BaseModel):
-        episode_id: Optional[str] = None
-        step_count: int = 0
-        task_id: str = ""
-        alert_reviewed: bool = False
-        customer_profiled: bool = False
-        transactions_queried: bool = False
-        watchlist_checked: list = []
-        network_traced: bool = False
-        source_checked: list = []
-        risk_assessed: bool = False
-        decision_made: bool = False
-        findings: list = []
-        accumulated_reward: float = 0.0
-
-    # ---- App setup ---------------------------------------------------- #
-
     app = FastAPI(
-        title="AML Investigation Environment",
+        title="Memex: AML OS-Agent Benchmark",
         description=(
-            "OpenEnv-compatible environment for Anti-Money Laundering investigation. "
-            "An agent investigates alerts and decides whether to file a SAR."
+            "OpenEnv-compatible environment testing LLMs as OS-agents "
+            "over AML investigations. Implements Virtual Memory, Interrupts, "
+            "and Kernel Updates."
         ),
-        version="0.1.0",
+        version="0.2.0",
     )
 
     app.add_middleware(
@@ -113,32 +90,22 @@ if not _openenv_available:
         allow_headers=["*"],
     )
 
-    # One environment instance per server process (stateful)
     _env = AMLEnvironment()
-
-    # ------------------------------------------------------------------ #
-    # Endpoints                                                            #
-    # ------------------------------------------------------------------ #
+    _last_agui_state: Dict[str, Any] = {}
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "env": "aml_investigation_env"}
+        return {"status": "ok", "env": "aml_investigation_env", "version": "0.2.0"}
 
     @app.post("/reset")
     async def reset(request: ResetRequest):
-        """
-        Reset the environment for a new episode.
-
-        Body parameters:
-        - task_id : "easy" | "medium" | "hard"  (default "easy")
-        - seed    : optional random seed
-        - episode_id : optional custom episode ID
-        """
+        global _last_agui_state
         obs = _env.reset(
             seed=request.seed,
             episode_id=request.episode_id,
             task_id=request.task_id,
         )
+        _last_agui_state = obs.metadata.get("agui_state", {})
         return {
             "observation": {
                 "tool_result": obs.tool_result,
@@ -152,14 +119,8 @@ if not _openenv_available:
 
     @app.post("/step")
     async def step(request: StepRequest):
-        """
-        Execute a tool action.
-
-        Body: {"action": {"tool": "...", "parameters": {...}}, "timeout_s": null}
-        Also accepts flat format: {"tool": "...", "parameters": {...}}
-        """
+        global _last_agui_state
         act_data = request.action
-        # Support flat format too
         if not act_data:
             raise HTTPException(400, "Missing 'action' field")
         tool = act_data.get("tool", "")
@@ -169,6 +130,7 @@ if not _openenv_available:
             raise HTTPException(400, "Missing 'tool' in action")
         action = AMLAction(tool=tool, parameters=parameters, metadata=metadata)
         obs = _env.step(action, timeout_s=request.timeout_s)
+        _last_agui_state = obs.metadata.get("agui_state", {})
         return {
             "observation": {
                 "tool_result": obs.tool_result,
@@ -182,17 +144,27 @@ if not _openenv_available:
 
     @app.get("/state")
     async def get_state():
-        """Return a snapshot of the current environment state."""
         s = _env.state
         return s.model_dump()
+
+    @app.get("/agui")
+    async def get_agui():
+        """Return the latest AGUI visualization payload for the frontend."""
+        return {
+            "step": _env.state.step_count,
+            "max_steps": 25,
+            "environment_status": "done" if _env.state.decision_made else "in_progress",
+            "agui_state": _last_agui_state,
+        }
 
     @app.get("/")
     async def root():
         return {
-            "name": "aml_investigation_env",
-            "version": "0.1.0",
-            "endpoints": ["/health", "/reset", "/step", "/state"],
+            "name": "memex_aml_investigation_env",
+            "version": "0.2.0",
+            "endpoints": ["/health", "/reset", "/step", "/state", "/agui"],
             "tasks": ["easy", "medium", "hard"],
+            "os_mechanics": ["virtual_memory", "interrupts", "kernel_updates"],
         }
 
 

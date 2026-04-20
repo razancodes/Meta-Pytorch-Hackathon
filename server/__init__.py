@@ -1,1 +1,1 @@
-"""AML Investigation Environment — server package."""
+"""Memex OS-Agent Benchmark — AML Environment server package."""

@@ -1,22 +1,25 @@
 """
-Deterministic grader for all three AML investigation tasks.
+Memex OS-Agent Benchmark — Dense Reward Grader.
 
-Grading rubric:
-  - Decision correctness    0.30
-  - Typology correctness    0.15
-  - Key findings coverage   0.25  (proportional to # matched)
-  - Entity precision/recall 0.15
-  - Efficiency              0.15  (based on step count vs optimal)
+Implements the two-tier reward system:
 
-Total: 1.00
+  1. **Per-Step Micro-Rewards** (grade_step):
+     - Action cost, redundancy penalty, page fault, async timeout,
+       successful page, meta-injection.
+
+  2. **Terminal Composite Score** (grade_terminal):
+     - Decision correctness, typology, findings coverage, entity F1,
+       efficiency — mapped to [-1.0, +1.0] range.
+
+The final episode reward = terminal_score + accumulated_step_rewards,
+clamped to [-1.0, +1.0].
 """
 
 from __future__ import annotations
 
-import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Set
 
-# Dual import: in-repo vs standalone
+# Dual import
 try:
     from scenarios import get_scenario
     from models import AMLState
@@ -25,36 +28,115 @@ except ImportError:
     from aml_investigation_env.models import AMLState
 
 
-# ---- Per-task optimal step counts (used for efficiency scoring) --------
-OPTIMAL_STEPS: Dict[str, int] = {
-    "easy": 5,    # review_alert, get_customer_profile, query_transactions, check_source, file_sar
-    "medium": 8,  # alert + profile + transactions + watchlist(x2) + network + source + file_sar
-    "hard": 10,   # alert + profile + transactions + watchlist + network(depth2) + source + market + assess_risk + file_sar
-}
+# ---------------------------------------------------------------------------
+# Reward Constants
+# ---------------------------------------------------------------------------
 
-MAX_STEPS = 25
+# Per-step costs/rewards
+ACTION_COST:        float = -0.02   # Every step
+REDUNDANT_PENALTY:  float = -0.03   # Duplicate tool+params
+PAGE_FAULT_PENALTY: float = -0.05   # Evicted data not on disk
+ASYNC_TIMEOUT_PENALTY: float = -0.10  # Premature async retrieval
+SUCCESSFUL_PAGE:    float = +0.10   # Good write_to_case_file
+META_INJECTION:     float = +0.15   # Successful kernel update
+UNIQUE_TOOL_BONUS:  float = +0.03   # Novel, useful tool call
+
+# Terminal
+CORRECT_SAR_BONUS:    float = +1.00
+FALSE_POSITIVE_PENALTY: float = -1.00
+
+# Optimal steps per task (for efficiency scoring)
+OPTIMAL_STEPS: Dict[str, int] = {
+    "easy": 7,
+    "medium": 10,
+    "hard": 13,
+}
+MAX_STEPS: int = 25
+
+# Common aliases for fuzzy finding matching (preserved from original)
+ALIASES: Dict[str, List[str]] = {
+    "sub_threshold": ["structuring", "below_threshold", "under_threshold", "sub_ctr"],
+    "no_source_documentation": ["no_documentation", "undocumented", "no_business_justification", "no_source"],
+    "cash_intensive_occupation": ["cash_business", "business_justification", "occupation"],
+    "same_branch_repeated": ["same_branch", "single_branch", "branch_pattern"],
+    "total_exceeds_ctr_threshold": ["total_above", "exceeds_threshold", "aggregate_amount", "ctr"],
+    "rapid_fan_out": ["fan_out", "dispersal", "split_transfer", "multiple_outgoing"],
+    "pep_connection": ["pep", "politically_exposed"],
+    "shared_registered_address": ["shared_address", "same_address", "common_address"],
+    "offshore_source": ["offshore", "foreign_source"],
+    "newly_incorporated": ["recent_incorporation", "new_company", "recently_formed"],
+    "no_trade_documentation": ["no_documentation", "no_trade_docs", "missing_docs"],
+    "over_invoicing": ["over_invoice", "inflated_price", "price_manipulation", "above_market"],
+    "beneficial_owner_connection": ["beneficial_owner", "family_connection", "related_party"],
+    "fatf_jurisdiction": ["fatf", "high_risk_jurisdiction", "monitored_jurisdiction"],
+    "reversed_transaction": ["reversal", "reversed", "corrected_transaction", "amended_transaction"],
+    "unexplained_funds": ["unexplained", "unknown_source", "unjustified_funds"],
+    "multiple_sub_threshold_deposits": ["multiple_deposits", "structuring", "sub_threshold", "below_threshold"],
+    "no_cash_intensive_occupation": ["no_cash_business", "non_cash_occupation", "clerk", "office"],
+}
 
 
 class AMLGrader:
-    """Deterministic scoring engine for completed AML investigation episodes.
+    """Dense reward grader for the Memex OS-Agent benchmark.
 
-    Implements a weighted rubric that evaluates five orthogonal dimensions of
-    investigative quality: decision accuracy, typology identification, evidence
-    coverage, entity-level precision/recall, and step efficiency. This design
-    intentionally avoids LLM-as-judge approaches to ensure reproducible,
-    auditable benchmarking across model comparisons.
-
-    Scoring Philosophy:
-        The rubric weights reflect real-world compliance priorities. Decision
-        correctness (0.30) dominates because a wrong SAR/close decision is the
-        costliest failure mode. Evidence coverage (0.25) rewards thorough
-        investigation. The remaining weight is split across typology accuracy,
-        entity identification (F1), and operational efficiency.
-
-    Attributes:
-        OPTIMAL_STEPS: Per-task minimum step counts representing an ideal
-            investigation path, used as the baseline for efficiency scoring.
+    grade_step() — called once per step to compute micro-rewards.
+    grade_terminal() — called once at episode end for the composite score.
+    grade() — legacy-compatible entry point for terminal scoring.
     """
+
+    # ------------------------------------------------------------------ #
+    # Per-Step Rewards                                                     #
+    # ------------------------------------------------------------------ #
+
+    def grade_step(
+        self,
+        tool: str,
+        params: Dict[str, Any],
+        state: AMLState,
+        call_hash: str,
+        *,
+        is_page_fault: bool = False,
+        is_async_timeout: bool = False,
+        is_successful_page: bool = False,
+        is_meta_injection: bool = False,
+    ) -> float:
+        """Compute the per-step micro-reward.
+
+        The step reward is the sum of all applicable signals.
+        The environment passes boolean flags from the StateManager so
+        the grader doesn't need to know about OS internals.
+
+        Returns:
+            float — typically in [-0.15, +0.15]
+        """
+        reward = ACTION_COST  # Base cost per step
+
+        # Redundancy check
+        if call_hash in state.tool_call_hashes:
+            reward += REDUNDANT_PENALTY
+
+        # OS mechanic signals
+        if is_page_fault:
+            reward += PAGE_FAULT_PENALTY
+
+        if is_async_timeout:
+            reward += ASYNC_TIMEOUT_PENALTY
+
+        if is_successful_page:
+            reward += SUCCESSFUL_PAGE
+
+        if is_meta_injection:
+            reward += META_INJECTION
+
+        # Small bonus for unique, non-redundant tool calls
+        if call_hash not in state.tool_call_hashes and not is_page_fault:
+            reward += UNIQUE_TOOL_BONUS
+
+        return round(reward, 4)
+
+    # ------------------------------------------------------------------ #
+    # Terminal Grading                                                     #
+    # ------------------------------------------------------------------ #
 
     def grade(
         self,
@@ -65,192 +147,116 @@ class AMLGrader:
         typology: str,
         state: AMLState,
     ) -> float:
-        """Compute a composite score in [0.001, 0.999] for a completed episode.
+        """Compute the final episode score in [-1.0, +1.0].
 
-        Evaluates the agent's terminal action against the scenario's ground truth
-        across five weighted dimensions. Each component is independently scored
-        and summed, producing a transparent, decomposable final score. The result
-        is clamped to (0.001, 0.999) to avoid degenerate log-probability issues
-        in downstream RL training loops.
-
-        Args:
-            task_id: Scenario identifier ('easy', 'medium', or 'hard').
-            decision: The agent's terminal action ('file_sar' or 'close_alert').
-            findings: Free-text finding strings submitted by the agent, matched
-                against ground truth via keyword overlap and semantic aliasing.
-            entities_flagged: Entity IDs the agent identified as involved in the
-                suspicious activity. Scored via precision/recall F1.
-            typology: The money laundering typology the agent reported
-                (e.g., 'structuring', 'layering', 'trade_based_ml').
-            state: The terminal ``AMLState`` snapshot, used for step-count
-                efficiency scoring.
-
-        Returns:
-            A float in [0.001, 0.999] representing the composite episode score.
-
-        Scoring Breakdown:
-            - Decision correctness (0.30): Binary — did the agent file/close correctly?
-            - Typology correctness (0.15): Case-insensitive exact match.
-            - Key findings coverage (0.25): Proportional to ground-truth findings matched.
-            - Entity precision/recall F1 (0.15): Penalizes both missed and falsely flagged entities.
-            - Efficiency (0.15): Linear decay from optimal step count to MAX_STEPS.
+        Combines a 5-dimension weighted rubric with accumulated step rewards.
         """
         scenario = get_scenario(task_id)
         gt = scenario.ground_truth
-        score = 0.0
 
-        # ------------------------------------------------------------------ #
-        # 1. Decision correctness  (weight 0.30)                              #
-        # ------------------------------------------------------------------ #
-        if decision == gt["correct_decision"]:
-            score += 0.30
+        # --------------- 1. Decision correctness (weight 0.35) ---------- #
+        decision_correct = decision == gt["correct_decision"]
+        decision_score = 0.35 if decision_correct else -0.50
 
-        # ------------------------------------------------------------------ #
-        # 2. Typology correctness  (weight 0.15)                              #
-        # ------------------------------------------------------------------ #
+        # --------------- 2. Typology correctness (weight 0.15) ---------- #
+        typology_score = 0.0
         if typology and typology.lower().strip() == gt.get("typology", "").lower().strip():
-            score += 0.15
+            typology_score = 0.15
 
-        # ------------------------------------------------------------------ #
-        # 3. Key findings coverage  (weight 0.25)                             #
-        # ------------------------------------------------------------------ #
+        # --------------- 3. Key findings coverage (weight 0.25) --------- #
         gt_findings = gt.get("key_findings", [])
+        findings_score = 0.0
         if gt_findings:
             matched = self._count_findings_matched(findings, gt_findings)
-            score += 0.25 * (matched / len(gt_findings))
+            findings_score = 0.25 * (matched / len(gt_findings))
 
-        # ------------------------------------------------------------------ #
-        # 4. Entity precision / recall  (weight 0.15)                         #
-        # ------------------------------------------------------------------ #
-        gt_entities = set(gt.get("key_entities", []))
-        flagged_set = set(entities_flagged) if entities_flagged else set()
-        excluded = set(gt.get("excluded_entities", []))
+        # --------------- 4. Entity precision/recall F1 (weight 0.15) ---- #
+        gt_entities: Set[str] = set(gt.get("key_entities", []))
+        flagged_set: Set[str] = set(entities_flagged) if entities_flagged else set()
+        excluded: Set[str] = set(gt.get("excluded_entities", []))
+        entity_score = 0.0
 
         if gt_entities:
-            # Penalise incorrectly flagging excluded entities
             false_positives = len(flagged_set & excluded)
             true_positives = len(flagged_set & gt_entities)
-            false_negatives = len(gt_entities - flagged_set)
 
             precision = true_positives / max(len(flagged_set) - false_positives + true_positives, 1)
             recall = true_positives / len(gt_entities)
             f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
-            score += 0.15 * f1
+            entity_score = 0.15 * f1
 
-        # ------------------------------------------------------------------ #
-        # 5. Efficiency  (weight 0.15)                                        #
-        # ------------------------------------------------------------------ #
-        optimal = OPTIMAL_STEPS.get(task_id, 8)
+        # --------------- 5. Efficiency (weight 0.10) -------------------- #
+        optimal = OPTIMAL_STEPS.get(task_id, 10)
         step_count = state.step_count
-        # Full credit at optimal; linear decay; zero credit at MAX_STEPS
         if step_count <= optimal:
             efficiency = 1.0
         else:
             efficiency = max(0.0, 1.0 - (step_count - optimal) / (MAX_STEPS - optimal))
-        score += 0.15 * efficiency
+        efficiency_score = 0.10 * efficiency
 
-        return min(max(round(score, 4), 0.001), 0.999)
+        # --------------- Composite ------------------------------------ #
+        terminal_score = decision_score + typology_score + findings_score + entity_score + efficiency_score
+
+        # Add accumulated step rewards (micro-rewards from OS mechanics)
+        total = terminal_score + state.accumulated_reward
+
+        # Clamp to [-1.0, +1.0]
+        return round(max(-1.0, min(1.0, total)), 4)
 
     # ------------------------------------------------------------------ #
-    # Helpers                                                              #
+    # grade_step legacy alias (for backward compatibility)                 #
+    # ------------------------------------------------------------------ #
+
+    def grade_terminal(self, *args: Any, **kwargs: Any) -> float:
+        """Alias for grade() for clarity."""
+        return self.grade(*args, **kwargs)
+
+    # ------------------------------------------------------------------ #
+    # Findings Matching                                                    #
     # ------------------------------------------------------------------ #
 
     def _count_findings_matched(self, agent_findings: List[str], gt_findings: List[str]) -> int:
-        """Count ground-truth findings matched by the agent's reported findings.
+        """Count ground-truth findings matched by the agent's findings.
 
-        Implements a three-tier fuzzy matching strategy designed to be robust to
-        the natural language variability of LLM outputs while remaining strict
-        enough to prevent credit for unrelated findings:
-
-        Matching Tiers (evaluated in order, first match wins):
-            1. **Keyword Overlap**: Tokenizes the ground-truth finding into
-               significant keywords (len > 2) and checks if ≥50% appear in any
-               single agent finding. This handles rephrasing (e.g., "sub_threshold"
-               vs "deposits_below_threshold").
-            2. **Semantic Alias Table**: A curated synonym map covers common
-               domain-specific rephrasings (e.g., "no_source_documentation" ↔
-               "undocumented", "no_business_justification"). Aliases are checked
-               against the concatenated agent findings string.
-            3. **Substring Fallback**: Any individual ground-truth keyword
-               appearing anywhere in the joined agent findings triggers a match.
-               This is the most permissive tier and acts as a safety net.
-
-        Args:
-            agent_findings: Normalized finding strings from the agent's terminal action.
-            gt_findings: Ground-truth finding keys from the scenario definition.
-
-        Returns:
-            The count of ground-truth findings successfully matched (0 to len(gt_findings)).
+        Three-tier fuzzy matching:
+        1. ≥50% keyword overlap in any single finding
+        2. Alias table lookup
+        3. Substring fallback
         """
-        # Common aliases so slight phrasing differences still match
-        ALIASES = {
-            "sub_threshold": ["structuring", "below_threshold", "under_threshold", "sub_ctr"],
-            "no_source_documentation": ["no_documentation", "undocumented", "no_business_justification", "no_source"],
-            "cash_intensive_occupation": ["cash_business", "business_justification", "occupation"],
-            "same_branch_repeated": ["same_branch", "single_branch", "branch_pattern"],
-            "total_exceeds_ctr_threshold": ["total_above", "exceeds_threshold", "aggregate_amount", "ctr"],
-            "rapid_fan_out": ["fan_out", "dispersal", "split_transfer", "multiple_outgoing"],
-            "pep_connection": ["pep", "politically_exposed"],
-            "shared_registered_address": ["shared_address", "same_address", "common_address"],
-            "offshore_source": ["offshore", "foreign_source"],
-            "newly_incorporated": ["recent_incorporation", "new_company", "recently_formed"],
-            "no_trade_documentation": ["no_documentation", "no_trade_docs", "missing_docs"],
-            "over_invoicing": ["over_invoice", "inflated_price", "price_manipulation", "above_market"],
-            "beneficial_owner_connection": ["beneficial_owner", "family_connection", "related_party"],
-            "fatf_jurisdiction": ["fatf", "high_risk_jurisdiction", "monitored_jurisdiction"],
-            "reversed_transaction": ["reversal", "reversed", "corrected_transaction", "amended_transaction"],
-            "unexplained_funds": ["unexplained", "unknown_source", "unjustified_funds"],
-        }
-
         matched = 0
         normalised_agent = [f.lower().replace("-", "_").replace(" ", "_") for f in agent_findings]
-        joined_agent = " ".join(normalised_agent)  # For broad substring search
+        joined_agent = " ".join(normalised_agent)
 
         for gt_f in gt_findings:
             gt_norm = gt_f.lower().replace("-", "_")
             gt_keywords = [kw for kw in gt_norm.split("_") if len(kw) > 2]
 
             # Tier 1: ≥50% keyword overlap in any single agent finding
+            found = False
             for af in normalised_agent:
                 hits = sum(1 for kw in gt_keywords if kw in af)
                 if gt_keywords and hits / len(gt_keywords) >= 0.5:
                     matched += 1
+                    found = True
                     break
-            else:
-                # Tier 2: Check alias table
-                aliases = ALIASES.get(gt_norm, [])
-                found_via_alias = False
-                for alias in aliases:
-                    alias_norm = alias.lower().replace("-", "_").replace(" ", "_")
-                    if alias_norm in joined_agent:
-                        matched += 1
-                        found_via_alias = True
-                        break
-                if found_via_alias:
-                    continue
-                # Tier 3: Any GT keyword appears as a substring in the joined agent findings
-                if any(kw in joined_agent for kw in gt_keywords):
+
+            if found:
+                continue
+
+            # Tier 2: Alias table
+            aliases = ALIASES.get(gt_norm, [])
+            found_via_alias = False
+            for alias in aliases:
+                alias_norm = alias.lower().replace("-", "_").replace(" ", "_")
+                if alias_norm in joined_agent:
                     matched += 1
+                    found_via_alias = True
+                    break
+            if found_via_alias:
+                continue
+
+            # Tier 3: Any GT keyword appears as substring
+            if any(kw in joined_agent for kw in gt_keywords):
+                matched += 1
+
         return matched
-
-    def grade_step(
-        self,
-        tool: str,
-        params: Dict[str, Any],
-        state: AMLState,
-        call_hash: str,
-    ) -> float:
-        """
-        Compute a per-step reward.
-
-        Returns
-        -------
-        float — typically in [-0.05, +0.05]
-        """
-        if call_hash in state.tool_call_hashes:
-            # Redundant call — same tool + params seen before
-            return -0.02
-
-        # All unique tool calls yield a small positive reward
-        # (irrelevant tools penalised more)
-        return 0.05
