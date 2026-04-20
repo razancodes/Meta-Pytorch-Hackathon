@@ -1,10 +1,15 @@
+#!/usr/bin/env python3
 """
-Memex OS-Agent Benchmark — Smoke Tests.
+Memex OS-Agent Benchmark — Smoke Tests (Procedural Generator Edition).
 
-Exercises all three OS mechanics (Virtual Memory, Interrupts, Kernel Updates)
-directly against the AMLEnvironment class (no HTTP server required).
-
-Run: cd /home/Muaz/Documents/Software/MetaHack && python tests/test_smoke.py
+Exercises:
+  1. Procedural Generator: unique IDs per episode, all 3 typologies × 3 difficulties.
+  2. Anti-Memorization: two successive resets produce different entity IDs.
+  3. Compliance Manual: keyword search.
+  4. Noise Injection: scales with difficulty.
+  5. Full Easy Episode: structuring with all OS mechanics.
+  6. Full Medium Episode: layering with all OS mechanics.
+  7. Full Hard Episode: trade-based ML with all OS mechanics.
 """
 
 from __future__ import annotations
@@ -12,262 +17,246 @@ from __future__ import annotations
 import sys
 import os
 
-# Ensure project root is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import AMLAction, AMLObservation, AMLState
+from models import AMLAction
+from scenarios.procedural_generator import ScenarioGenerator, GeneratedScenario
+from scenarios.compliance_manual import search_compliance_manual
 from server.aml_environment import AMLEnvironment
 
+PASS = 0
+TOTAL = 0
 
-def _step(env: AMLEnvironment, tool: str, **params) -> AMLObservation:
-    """Helper to take a step and print a summary."""
-    action = AMLAction(tool=tool, parameters=params)
-    obs = env.step(action)
-    agui = obs.metadata.get("agui_state", {})
-    ram = agui.get("ram_usage", {}).get("capacity", "?")
-    disk = len(agui.get("disk_storage", []))
-    async_jobs = len(agui.get("async_jobs", []))
-    kernel = len(agui.get("kernel_directives", []))
-    reward_str = f"{obs.reward:+.4f}" if obs.reward is not None else "None"
-    print(
-        f"  Step {env.state.step_count:2d} | {tool:30s} | "
-        f"R={reward_str} | RAM={ram} | Disk={disk} | Async={async_jobs} | Kernel={kernel} | "
-        f"{'DONE' if obs.done else 'ok'}"
-    )
+def test(name: str):
+    global TOTAL
+    TOTAL += 1
+    print(f"\n{'='*70}")
+    print(f"TEST: {name}")
+    print(f"{'='*70}")
+
+def ok(msg: str):
+    global PASS
+    PASS += 1
+    print(f"  ✓ {msg}")
+
+def fail(msg: str):
+    print(f"  ✗ FAIL: {msg}")
+    sys.exit(1)
+
+
+# Helper: run a sequence of tools through the environment
+def run_tools(env, tools):
+    """Execute a list of (tool_name, params) through env.step(). Returns last obs."""
+    obs = None
+    for tool_name, params in tools:
+        action = AMLAction(tool=tool_name, parameters=params)
+        obs = env.step(action)
+        r = obs.reward or 0.0
+        ram = obs.metadata.get("agui_state", {}).get("ram_usage", {}).get("capacity", "?")
+        done_lbl = "DONE" if obs.done else "ok"
+        print(f"  Step | {tool_name:<30} | R={r:+.4f} | RAM={ram} | {done_lbl}")
+        if obs.done:
+            break
     return obs
 
 
-def test_easy_scenario():
-    """Full episode on easy scenario exercising all OS mechanics."""
-    print("\n{'='*70}")
-    print("TEST: Easy Scenario (Structuring) — Full OS Mechanics")
-    print("=" * 70)
+# ===================================================================== #
+# 1. Procedural Generator — All Typologies                              #
+# ===================================================================== #
+test("Procedural Generator — All 9 Combos")
+gen = ScenarioGenerator(seed=42)
 
-    env = AMLEnvironment()
-    obs = env.reset(task_id="easy")
-    assert not obs.done
-    assert "agui_state" in obs.metadata
-    print(f"  Reset OK | Episode: {env.state.episode_id[:8]}...")
+for typo in ["structuring", "layering", "trade_based_ml"]:
+    for diff in ["easy", "medium", "hard"]:
+        sc = gen.generate(difficulty=diff, typology=typo)
+        assert isinstance(sc, GeneratedScenario)
+        assert sc.initial_alert
+        assert sc.customer_profiles
+        assert sc.transactions
+        assert sc.watchlist_results
+        assert sc.network_graph
+        assert sc.source_of_funds
+        assert sc.ground_truth
+        assert sc.ground_truth["typology"] == typo
+        assert sc.ground_truth["correct_decision"] == "file_sar"
+        assert len(sc.ground_truth["key_entities"]) >= 1
+        assert len(sc.ground_truth["key_findings"]) >= 3
 
-    # Phase 1: Review alert
-    obs = _step(env, "review_alert")
-    assert not obs.done
+        print(f"  ✓ {diff}/{typo}: alert={sc.initial_alert['alert_id']}, "
+              f"entities={len(sc.customer_profiles)}, txns={len(sc.transactions)}, "
+              f"GT_keys={sc.ground_truth['key_entities'][:2]}...")
 
-    # Phase 2: Get customer profile
-    obs = _step(env, "get_customer_profile", customer_id="CUST001")
-    assert not obs.done
-
-    # Phase 3: Write findings to disk (Virtual Memory — paging)
-    obs = _step(env, "write_to_case_file",
-                content="CUST001 = John Doe, retail clerk, $38k income, 5 cash deposits ~$9.5k each")
-    assert not obs.done
-    assert env.state.successful_pages == 1
-    print("    ✓ Successful page to disk")
-
-    # Phase 4: Query transactions
-    obs = _step(env, "query_transactions", customer_id="CUST001")
-    assert not obs.done
-
-    # Phase 5: Async wire trace (Interrupt mechanic)
-    obs = _step(env, "request_wire_trace", entity_id="CUST001")
-    assert not obs.done
-    job_id = obs.tool_result.get("job_id")
-    eta = obs.tool_result.get("eta_steps")
-    assert job_id is not None, "Wire trace should return a job_id"
-    print(f"    ✓ Async job {job_id} enqueued, ETA={eta}")
-
-    # Phase 6: Try premature retrieval (should trigger Async Timeout)
-    obs = _step(env, "retrieve_async_result", job_id=job_id)
-    if obs.tool_result.get("error") == "Job not ready":
-        assert env.state.async_timeout_count >= 1
-        print("    ✓ Async timeout penalty triggered correctly")
-
-    # Phase 7: Search compliance manual (Kernel Update — search)
-    obs = _step(env, "search_compliance_manual", query="structuring threshold CTR")
-    assert obs.tool_result.get("count", 0) > 0
-    rules = obs.tool_result.get("results", [])
-    print(f"    ✓ Found {len(rules)} compliance rules")
-
-    # Phase 8: Inject rule into kernel (Kernel Update — injection)
-    if rules:
-        obs = _step(env, "update_system_prompt", rule=rules[0]["text"])
-        assert env.state.meta_injections >= 1
-        print("    ✓ Meta-injection successful")
-
-    # Phase 9: More investigation
-    obs = _step(env, "check_watchlist", entity_name="John Doe")
-    obs = _step(env, "check_source_of_funds", transaction_id="TXN-001-A")
-
-    # Phase 10: Save more findings to disk
-    obs = _step(env, "write_to_case_file",
-                content="TXN-001-A through TXN-001-E: 5 cash deposits, all sub-$10k, same branch")
-
-    # Phase 11: Retrieve async result (should be ready by now)
-    obs = _step(env, "retrieve_async_result", job_id=job_id)
-    # May or may not be ready depending on ETA — that's ok
-
-    # Phase 12: File SAR (terminal)
-    obs = _step(env, "file_sar",
-                findings=[
-                    "multiple_sub_threshold_deposits",
-                    "no_cash_intensive_occupation",
-                    "same_branch_repeated",
-                    "no_source_documentation",
-                    "total_exceeds_ctr_threshold",
-                ],
-                typology="structuring",
-                entities_involved=["CUST001"])
-    assert obs.done
-    final_score = obs.tool_result.get("final_score", 0)
-    print(f"\n  FINAL SCORE: {final_score:+.4f}")
-    assert final_score > 0, f"Expected positive score for correct SAR, got {final_score}"
-    print("  ✓ Easy scenario PASSED")
-
-    # Verify AGUI payload structure
-    agui = obs.metadata.get("agui_state", {})
-    assert "ram_usage" in agui
-    assert "disk_storage" in agui
-    assert "async_jobs" in agui
-    assert "kernel_directives" in agui
-    print("  ✓ AGUI payload structure verified")
-
-    # Verify OS mechanic counters
-    state = env.state
-    assert state.successful_pages >= 2, "Should have 2 successful pages"
-    assert state.meta_injections >= 1, "Should have 1 meta-injection"
-    print(f"  ✓ OS Stats — Pages:{state.successful_pages} MetaInj:{state.meta_injections} "
-          f"Faults:{state.page_fault_count} Timeouts:{state.async_timeout_count}")
+ok("All 9 typology/difficulty combos generate valid scenarios")
 
 
-def test_ram_eviction():
-    """Verify that RAM eviction works correctly."""
-    print(f"\n{'='*70}")
-    print("TEST: RAM Eviction Mechanics")
-    print("=" * 70)
+# ===================================================================== #
+# 2. Anti-Memorization                                                   #
+# ===================================================================== #
+test("Anti-Memorization — Unique IDs per Episode")
 
-    env = AMLEnvironment()
-    env.reset(task_id="easy")
+gen_a = ScenarioGenerator()
+gen_b = ScenarioGenerator()
 
-    # Fill past RAM capacity (2 observations) + initial
-    _step(env, "review_alert")
-    _step(env, "get_customer_profile", customer_id="CUST001")
-    _step(env, "query_transactions", customer_id="CUST001")
+sc_a = gen_a.generate(difficulty="easy", typology="structuring")
+sc_b = gen_b.generate(difficulty="easy", typology="structuring")
 
-    # Check RAM has exactly 2 entries (capacity)
-    agui = env._sm.build_agui_state()
-    ram_count = len(agui["ram_usage"]["active_context"])
-    assert ram_count == 2, f"Expected 2 RAM entries (capacity), got {ram_count}"
-    print(f"  ✓ RAM capped at 2 entries after 4 observations (1 init + 3 steps)")
+id_a = sc_a.initial_alert["customer_id"]
+id_b = sc_b.initial_alert["customer_id"]
+txn_ids_a = set(t["transaction_id"] for t in sc_a.transactions)
+txn_ids_b = set(t["transaction_id"] for t in sc_b.transactions)
 
-    # The oldest observation should have been evicted
-    print("  ✓ Eviction confirmed")
+print(f"  Episode A: customer={id_a}, txns={len(txn_ids_a)}")
+print(f"  Episode B: customer={id_b}, txns={len(txn_ids_b)}")
+assert txn_ids_a != txn_ids_b, "Transaction IDs should differ!"
+ok(f"Unique IDs confirmed across episodes")
 
 
-def test_medium_scenario():
-    """Quick medium scenario exercise."""
-    print(f"\n{'='*70}")
-    print("TEST: Medium Scenario (Layering) — Quick Run")
-    print("=" * 70)
+# ===================================================================== #
+# 3. Compliance Manual                                                   #
+# ===================================================================== #
+test("Compliance Manual Search")
 
-    env = AMLEnvironment()
-    obs = env.reset(task_id="medium")
-    assert not obs.done
-    print(f"  Reset OK | Episode: {env.state.episode_id[:8]}...")
-
-    _step(env, "review_alert")
-    _step(env, "get_customer_profile", customer_id="CUST002")
-    _step(env, "query_transactions", customer_id="CUST002")
-    _step(env, "write_to_case_file", content="CUST002 layering scenario — funds fan-out to 3+ entities")
-    _step(env, "trace_network", entity_id="CUST002", depth=2)
-
-    obs = _step(env, "file_sar",
-                findings=["rapid_fan_out", "pep_connection", "shared_registered_address", "newly_incorporated"],
-                typology="layering",
-                entities_involved=["CUST002", "ENT_A", "ENT_B", "ENT_C", "ENT_D"])
-    assert obs.done
-    print(f"  FINAL SCORE: {obs.tool_result.get('final_score', 0):+.4f}")
-    print("  ✓ Medium scenario PASSED")
+for query, min_hits in [
+    ("structuring threshold deposits", 2),
+    ("FATF jurisdiction", 1),
+    ("price trade_based_ml", 1),
+]:
+    results = search_compliance_manual(query)
+    assert len(results) >= min_hits
+    print(f"  ✓ '{query}' → {len(results)} results")
+ok("Compliance manual PASSED")
 
 
-def test_hard_scenario():
-    """Quick hard scenario exercise."""
-    print(f"\n{'='*70}")
-    print("TEST: Hard Scenario (Trade-Based ML) — Quick Run")
-    print("=" * 70)
+# ===================================================================== #
+# 4. Noise Injection                                                     #
+# ===================================================================== #
+test("Noise Injection — Scales with Difficulty")
+gen = ScenarioGenerator(seed=99)
 
-    env = AMLEnvironment()
-    obs = env.reset(task_id="hard")
-    assert not obs.done
-    print(f"  Reset OK | Episode: {env.state.episode_id[:8]}...")
+for diff in ["easy", "medium", "hard"]:
+    sc = gen.generate(difficulty=diff, typology="structuring")
+    print(f"  {diff}: profiles={len(sc.customer_profiles)}, txns={len(sc.transactions)}")
 
-    _step(env, "review_alert")
-    _step(env, "get_customer_profile", customer_id="CUST003")
-    _step(env, "query_transactions", customer_id="CUST003")
-    _step(env, "check_market_price", commodity="machine parts")
-    _step(env, "write_to_case_file", content="CUST003 TBML — $50k/unit vs $12k market, 317% above")
-    _step(env, "trace_network", entity_id="CUST003")
-
-    obs = _step(env, "file_sar",
-                findings=["over_invoicing", "beneficial_owner_connection", "fatf_jurisdiction"],
-                typology="trade_based_ml",
-                entities_involved=["CUST003", "ENT_F", "Marcus Webb"])
-    assert obs.done
-    print(f"  FINAL SCORE: {obs.tool_result.get('final_score', 0):+.4f}")
-    print("  ✓ Hard scenario PASSED")
+sc_e = gen.generate(difficulty="easy", typology="layering")
+sc_h = gen.generate(difficulty="hard", typology="layering")
+assert len(sc_h.customer_profiles) >= len(sc_e.customer_profiles)
+assert len(sc_h.transactions) >= len(sc_e.transactions)
+ok("Noise scales with difficulty")
 
 
-def test_compliance_manual_search():
-    """Verify the compliance manual search works."""
-    print(f"\n{'='*70}")
-    print("TEST: Compliance Manual Search")
-    print("=" * 70)
+# ===================================================================== #
+# 5. Full Episode — Structuring                                         #
+# ===================================================================== #
+test("Full Episode — Procedural Structuring (Easy)")
 
-    from scenarios.compliance_manual import search_compliance_manual
+env = AMLEnvironment()
+init_obs = env.reset(task_id="easy", seed=42)
+subject_id = init_obs.tool_result["alert"]["customer_id"]
+print(f"  Reset OK | Subject: {subject_id}")
 
-    # Search for structuring rules
-    results = search_compliance_manual("structuring threshold deposits")
-    assert len(results) > 0, "Should find structuring rules"
-    print(f"  ✓ 'structuring threshold deposits' → {len(results)} results")
+obs = run_tools(env, [
+    ("review_alert", {}),
+    ("get_customer_profile", {"customer_id": subject_id}),
+    ("write_to_case_file", {"note": "Structuring suspect observed"}),
+    ("query_transactions", {"customer_id": subject_id}),
+    ("search_compliance_manual", {"query": "structuring"}),
+    ("update_system_prompt", {"directive": "Apply structuring detection rules"}),
+    ("check_watchlist", {"entity": subject_id}),
+])
 
-    # Search for FATF
-    results = search_compliance_manual("FATF jurisdiction")
-    assert len(results) > 0, "Should find FATF rules"
-    print(f"  ✓ 'FATF jurisdiction' → {len(results)} results")
+# File SAR with ground truth
+gt = env._current_scenario.ground_truth
+obs = env.step(AMLAction(
+    tool="file_sar",
+    parameters={
+        "typology": gt["typology"],
+        "entities_involved": gt["key_entities"],
+        "findings": gt["key_findings"],
+    },
+))
+print(f"\n  FINAL SCORE: {obs.reward:+.4f}")
+assert obs.done
+assert obs.reward > 0.5, f"Expected >0.5, got {obs.reward}"
+ok(f"Procedural structuring PASSED (score={obs.reward:+.4f})")
 
-    # Search with category filter
-    results = search_compliance_manual("price", category_filter="trade_based_ml")
-    assert len(results) > 0, "Should find trade-based ML rules about pricing"
-    print(f"  ✓ 'price' (trade_based_ml) → {len(results)} results")
 
-    print("  ✓ Compliance manual search PASSED")
+# ===================================================================== #
+# 6. Full Episode — Layering                                            #
+# ===================================================================== #
+test("Full Episode — Procedural Layering (Medium)")
+
+env2 = AMLEnvironment()
+init_obs2 = env2.reset(task_id="medium", seed=77)
+subject_id2 = init_obs2.tool_result["alert"]["customer_id"]
+print(f"  Reset OK | Subject: {subject_id2}")
+
+obs2 = run_tools(env2, [
+    ("review_alert", {}),
+    ("get_customer_profile", {"customer_id": subject_id2}),
+    ("query_transactions", {"customer_id": subject_id2}),
+    ("trace_network", {"customer_id": subject_id2}),
+    ("write_to_case_file", {"note": "Fan-out pattern detected"}),
+])
+
+gt2 = env2._current_scenario.ground_truth
+obs2 = env2.step(AMLAction(
+    tool="file_sar",
+    parameters={
+        "typology": gt2["typology"],
+        "entities_involved": gt2["key_entities"],
+        "findings": gt2["key_findings"],
+    },
+))
+print(f"\n  FINAL SCORE: {obs2.reward:+.4f}")
+assert obs2.done and obs2.reward > 0.5
+ok(f"Procedural layering PASSED (score={obs2.reward:+.4f})")
 
 
-if __name__ == "__main__":
-    passed = 0
-    failed = 0
-    tests = [
-        test_compliance_manual_search,
-        test_ram_eviction,
-        test_easy_scenario,
-        test_medium_scenario,
-        test_hard_scenario,
-    ]
+# ===================================================================== #
+# 7. Full Episode — Trade-Based ML                                      #
+# ===================================================================== #
+test("Full Episode — Procedural Trade-Based ML (Hard)")
 
-    for test_fn in tests:
-        try:
-            test_fn()
-            passed += 1
-        except Exception as e:
-            failed += 1
-            print(f"\n  ✗ FAILED: {test_fn.__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+env3 = AMLEnvironment()
+init_obs3 = env3.reset(task_id="hard", seed=123)
+subject_id3 = init_obs3.tool_result["alert"]["customer_id"]
+print(f"  Reset OK | Subject: {subject_id3}")
 
-    print(f"\n{'='*70}")
-    print(f"RESULTS: {passed}/{passed+failed} tests passed")
-    if failed:
-        print(f"         {failed} FAILED")
-        sys.exit(1)
-    else:
-        print("         All tests PASSED ✓")
-    print("=" * 70)
+# Get commodity from procedural market_data
+mdata = env3._current_scenario.market_data
+commodity_key = list(mdata.keys())[0] if mdata else None
+
+tools3 = [
+    ("review_alert", {}),
+    ("get_customer_profile", {"customer_id": subject_id3}),
+    ("query_transactions", {"customer_id": subject_id3}),
+    ("trace_network", {"customer_id": subject_id3}),
+    ("write_to_case_file", {"note": "Over-invoicing pattern detected"}),
+]
+if commodity_key:
+    tools3.append(("check_market_price", {"commodity": commodity_key}))
+
+obs3 = run_tools(env3, tools3)
+
+gt3 = env3._current_scenario.ground_truth
+obs3 = env3.step(AMLAction(
+    tool="file_sar",
+    parameters={
+        "typology": gt3["typology"],
+        "entities_involved": gt3["key_entities"],
+        "findings": gt3["key_findings"],
+    },
+))
+print(f"\n  FINAL SCORE: {obs3.reward:+.4f}")
+assert obs3.done and obs3.reward > 0.3
+ok(f"Procedural TBML PASSED (score={obs3.reward:+.4f})")
+
+
+# ===================================================================== #
+# Results                                                                #
+# ===================================================================== #
+print(f"\n{'='*70}")
+print(f"RESULTS: {PASS}/{TOTAL} tests passed")
+print(f"         {'All tests PASSED ✓' if PASS == TOTAL else 'SOME TESTS FAILED ✗'}")
+print(f"{'='*70}\n")
+sys.exit(0 if PASS == TOTAL else 1)

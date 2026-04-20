@@ -552,7 +552,7 @@ class AMLEnvironment(Environment):
         self._state.findings.extend(findings)
 
         final_score = self._grader.grade(
-            task_id=self._state.task_id,
+            ground_truth=self._current_scenario.ground_truth,
             decision="file_sar",
             findings=findings,
             entities_flagged=entities_involved,
@@ -591,7 +591,7 @@ class AMLEnvironment(Environment):
         self._state.findings.extend(findings)
 
         final_score = self._grader.grade(
-            task_id=self._state.task_id,
+            ground_truth=self._current_scenario.ground_truth,
             decision="close_alert",
             findings=findings,
             entities_flagged=entities_involved,
