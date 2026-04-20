@@ -51,7 +51,19 @@ secrets/
 .secret
 api_keys.json
 
+# Training artifacts
+checkpoints/
+checkpoints_70b/
+demo_output/
+wandb/
+
+# Lock files (using requirements.txt)
+uv.lock
+
 # Logs
 *.log
 server.log
 validate-curl-*
+
+# Gemini / AI
+.gemini/
