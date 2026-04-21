@@ -32,6 +32,10 @@ Launch:
 
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings("ignore", message=".*attention mask API.*", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*use_return_dict.*")
+
 import argparse
 import gc
 import json
@@ -110,7 +114,9 @@ class PPOConfig70B:
     ppo_epochs: int = 4
     clip_eps: float = 0.2
     kl_coef: float = 0.03           # lower KL for larger model
+    entropy_coef: float = 0.01      # entropy bonus (prevents mode collapse)
     gamma: float = 0.99
+    reward_clip: float = 2.0        # clip returns to [-clip, +clip]
     max_grad_norm: float = 0.5       # tighter clipping for 70B
     grad_accum_steps: int = 8        # larger accumulation for multi-GPU
 
@@ -338,7 +344,7 @@ class MemexPPO70B:
             resp_logits = logits[resp_start - 1 : -1, :]
             log_probs = F.log_softmax(resp_logits, dim=-1)
             token_lp = log_probs.gather(1, response_ids.to(self.device).unsqueeze(1)).squeeze(1)
-            return token_lp.sum()
+            return token_lp.mean()  # mean, NOT sum — keeps KL scale-invariant across response lengths
 
     def _compute_ref_log_prob(
         self, query_ids: torch.Tensor, response_ids: torch.Tensor,
@@ -377,6 +383,7 @@ class MemexPPO70B:
             out = gen_model.generate(
                 **inputs,
                 max_new_tokens=self.cfg.max_new_tokens,
+                max_length=None,  # suppress max_length vs max_new_tokens warning
                 temperature=self.cfg.temperature,
                 top_p=self.cfg.top_p,
                 do_sample=True,
@@ -472,6 +479,10 @@ class MemexPPO70B:
             G = steps[t].reward + self.cfg.gamma * G
             returns[t] = G
 
+        # Clip returns to prevent outlier gradient signals
+        clip = self.cfg.reward_clip
+        returns = [max(-clip, min(clip, r)) for r in returns]
+
         mean_return = sum(returns) / T
         self._reward_ema = (
             self._reward_ema_alpha * mean_return
@@ -496,6 +507,7 @@ class MemexPPO70B:
 
         total_policy_loss = 0.0
         total_kl = 0.0
+        total_entropy = 0.0
         n_updates = 0
 
         for epoch in range(self.cfg.ppo_epochs):
@@ -504,10 +516,20 @@ class MemexPPO70B:
             for i, step in enumerate(all_steps):
                 try:
                     # Current policy log prob (WITH gradients, through engine)
-                    new_lp = self._compute_log_prob(
-                        step.query_ids, step.response_ids,
-                        with_grad=True, use_engine=True,
-                    )
+                    fwd_model = self.engine.module if self.engine else self.model
+                    full_ids = torch.cat([step.query_ids, step.response_ids]).unsqueeze(0).to(self.device)
+                    resp_start = len(step.query_ids)
+
+                    logits = fwd_model(input_ids=full_ids).logits[0]
+                    resp_logits = logits[resp_start - 1 : -1, :]
+                    log_probs = F.log_softmax(resp_logits, dim=-1)
+                    token_lp = log_probs.gather(
+                        1, step.response_ids.to(self.device).unsqueeze(1),
+                    ).squeeze(1)
+                    new_lp = token_lp.mean()
+
+                    # Entropy bonus (prevents mode collapse)
+                    entropy = -(log_probs.exp() * log_probs).sum(-1).mean()
 
                     # PPO clipped surrogate
                     ratio = torch.exp(new_lp - step.old_log_prob)
@@ -522,7 +544,7 @@ class MemexPPO70B:
                     kl = new_lp - step.ref_log_prob
                     kl_loss = self.cfg.kl_coef * kl
 
-                    loss = policy_loss + kl_loss
+                    loss = policy_loss + kl_loss - self.cfg.entropy_coef * entropy
 
                     # DeepSpeed handles backward + gradient accumulation + all-reduce
                     if self.engine:
@@ -533,6 +555,7 @@ class MemexPPO70B:
 
                     total_policy_loss += policy_loss.item()
                     total_kl += kl.item()
+                    total_entropy += entropy.item()
                     n_updates += 1
 
                 except RuntimeError as e:
@@ -547,6 +570,7 @@ class MemexPPO70B:
         return {
             "ppo/loss/policy": total_policy_loss / n,
             "ppo/kl": total_kl / n,
+            "ppo/entropy": total_entropy / n,
             "ppo/steps_trained": n_updates,
         }
 
