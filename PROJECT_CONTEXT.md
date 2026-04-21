@@ -1,7 +1,7 @@
 # Memex: Project Context
 
 > Living document tracking the current state of the Memex OS-Agent Benchmark.
-> Last updated: 2026-04-20
+> Last updated: 2026-04-22
 
 ## What Is Memex?
 
@@ -134,6 +134,16 @@ Rather than batching entire episodes (which would require storing all token sequ
 
 **Colab/Kaggle deployment:** `TRAINING.md` provides 6 copy-paste cells: install stack → upload project → dry-run → train → evaluate → demo. Training 50 iterations on a T4 takes ~2.5 hours.
 
+### 4. PPO Stability Engineering
+
+The training loop includes production-grade safety features to prevent policy collapse:
+
+- **Mean per-token KL:** Log-probabilities use `.mean()` (not `.sum()`), making the KL divergence penalty scale-invariant regardless of response length. This is critical — `.sum()` causes KL to explode proportionally to token count, dwarfing environmental rewards and causing learned helplessness.
+- **Entropy bonus:** A `- entropy_coef × H(π)` term in the PPO loss prevents the policy from collapsing to a single deterministic action.
+- **Ratio clamping:** `log_ratio` is clamped to `[-10, 10]` before `exp()` to prevent inf/NaN from policy drift between PPO epochs.
+- **Return clipping:** Discounted returns are clipped to `[-2.0, +2.0]` to bound gradient signals from outlier episodes.
+- **Empty response guard:** If the model generates 0 tokens, a dummy EOS token is substituted to prevent NaN from `.mean()` on an empty tensor.
+
 ---
 
 ## Pitch Strategy: Gym vs. Stage
@@ -226,9 +236,18 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 
 ---
 
-## Recent Changes (2026-04-20)
+## Recent Changes
+
+### 2026-04-22
+
+1. **PPO stability overhaul (10 fixes):** Fixed catastrophic policy collapse caused by `.sum()` KL divergence. Added entropy bonus, ratio clamping, return clipping, and empty response guards to both `train_ppo.py` and `train_ppo_70b.py`.
+2. **Production hardening:** Both trainers now handle edge cases (zero-token responses, ratio overflow, gradient NaN) that would corrupt weights in long-horizon training runs.
+3. **WandB monitoring:** Added `ppo/entropy` metric for real-time mode collapse detection.
+
+### 2026-04-20
 
 1. **Codebase sanitization:** Removed duplicate type definitions from `app.py`, updated `client.py` with all 15 tools, rewrote README to reflect Memex OS-Agent architecture
 2. **Git consolidation:** Resolved stuck rebase, recovered all OS-mechanic features to `main`
 3. **PPO trainer:** Custom step-level PPO with Unsloth 4-bit + LoRA, T4-optimized (peak ~10GB VRAM)
-4. **Demo system:** 1MDB-inspired scenario with AGUI replay capture for frontend visualization
+4. **70B scaling pivot:** `train_ppo_70b.py` with DeepSpeed ZeRO-3 for multi-node A100 cluster
+5. **Demo system:** 1MDB-inspired scenario with AGUI replay capture for frontend visualization

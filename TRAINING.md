@@ -180,13 +180,42 @@ python train_ppo_70b.py --eval checkpoints_70b/best
 
 ---
 
+## PPO Stability Engineering
+
+Both trainers include **10 production-grade safety features** to prevent policy collapse during long-horizon RL training:
+
+### Mathematical Fixes
+
+| Feature | What | Why |
+|---------|------|-----|
+| **Mean log-prob** | `token_lp.mean()` instead of `.sum()` | KL divergence is now scale-invariant — same magnitude regardless of whether responses are 40 or 200 tokens |
+| **Ratio clamping** | `clamp(log_ratio, -10, 10)` before `exp()` | Prevents inf/NaN from policy drift between PPO epochs |
+| **Entropy bonus** | `- entropy_coef × H(π)` in loss | Keeps the policy exploring; prevents collapsing to a single degenerate action |
+| **Return clipping** | `clip(returns, -2.0, +2.0)` | Bounds gradient signals from outlier terminal rewards |
+| **Empty response guard** | Dummy EOS if model generates 0 tokens | Prevents NaN from `.mean()` on an empty tensor |
+
+### Hyperparameters
+
+| Parameter | T4 (8B) | A100 (70B) | Purpose |
+|-----------|---------|------------|----------|
+| `lr` | `5e-6` | `2e-6` | Lower LR for 70B parametric stability |
+| `kl_coef` | `0.05` | `0.03` | KL penalty weight against frozen base |
+| `entropy_coef` | `0.01` | `0.01` | Exploration bonus |
+| `clip_eps` | `0.2` | `0.2` | Standard PPO clipping |
+| `reward_clip` | `2.0` | `2.0` | Return clipping bound |
+| `grad_accum_steps` | `4` | `8` | Effective batch size |
+| `max_grad_norm` | `1.0` | `0.5` | Tighter gradient clipping for 70B |
+
+---
+
 ## WandB Monitoring
 
 | Metric | Healthy Range | What to Watch |
 |--------|---------------|---------------|
 | `ppo/returns/mean` | 0.0 → +0.8 over training | Main signal — should increase |
 | `ppo/loss/policy` | Decreasing, then stable | Convergence indicator |
-| `ppo/kl` | < 0.5 | Spike = policy diverging from base |
+| `ppo/kl` | -1.0 to +1.0 | Values outside [-2, +2] = policy drifting from base |
+| `ppo/entropy` | Slowly decreasing, never 0 | Drop to 0 = mode collapse — increase `entropy_coef` |
 | `os/page_faults` | Decreasing → 0 | Agent learning memory management |
 | `os/async_timeouts` | Decreasing → 0 | Agent learning to wait for async I/O |
 | `os/successful_pages` | Increasing | Agent using disk writes proactively |
