@@ -332,7 +332,7 @@ class MemexPPO70B:
         self, query_ids: torch.Tensor, response_ids: torch.Tensor,
         with_grad: bool = False, use_engine: bool = False,
     ) -> torch.Tensor:
-        """Compute sum of log probabilities for response tokens."""
+        """Compute mean per-token log probability for response tokens."""
         full_ids = torch.cat([query_ids, response_ids]).unsqueeze(0).to(self.device)
         resp_start = len(query_ids)
 
@@ -391,6 +391,11 @@ class MemexPPO70B:
                 pad_token_id=self.tokenizer.eos_token_id,
             )
         response_ids = out[0][len(query_ids):]
+
+        # Guard: if model emits 0 new tokens, return a dummy to avoid NaN
+        if len(response_ids) == 0:
+            response_ids = torch.tensor([self.tokenizer.eos_token_id])
+
         text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return text, query_ids.cpu(), response_ids.cpu()
 
@@ -532,7 +537,9 @@ class MemexPPO70B:
                     entropy = -(log_probs.exp() * log_probs).sum(-1).mean()
 
                     # PPO clipped surrogate
-                    ratio = torch.exp(new_lp - step.old_log_prob)
+                    log_ratio = new_lp - step.old_log_prob
+                    log_ratio = torch.clamp(log_ratio, -10.0, 10.0)  # prevent exp overflow
+                    ratio = torch.exp(log_ratio)
                     adv = torch.tensor(step.advantage, device=self.device)
                     surr1 = ratio * adv
                     surr2 = torch.clamp(
@@ -784,6 +791,7 @@ def train(cfg: PPOConfig70B) -> None:
             f"    Mean score:  {mean_score:+.4f}\n"
             f"    PPO loss:    {ppo_stats['ppo/loss/policy']:.6f}\n"
             f"    KL:          {ppo_stats['ppo/kl']:.6f}\n"
+            f"    Entropy:     {ppo_stats['ppo/entropy']:.4f}\n"
             f"    OS: PF={total_pf} AT={total_at} SP={total_sp} MI={total_mi}\n"
             f"    GPUs: {get_world_size()}  |  VRAM: {vram_status()}  |  {elapsed:.0f}s\n"
         )
