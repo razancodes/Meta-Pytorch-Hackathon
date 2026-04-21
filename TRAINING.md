@@ -1,12 +1,37 @@
-# Memex PPO Training — Setup & Colab/Kaggle Guide
+# Memex PPO Training Guide
 
-## Colab/Kaggle Installation Cell (Copy-Paste Ready)
+> Complete training pipeline for the Memex OS-Agent Benchmark.
+> Supports two tiers: **T4 (8B)** for prototyping and **A100 cluster (70B)** for production.
+
+---
+
+## Prerequisites
+
+| Dependency | Purpose |
+|-----------|---------|
+| `unsloth` | 4-bit NF4 quantization + fast LoRA |
+| `peft` | LoRA adapter management |
+| `bitsandbytes` | Quantization backend |
+| `deepspeed` | Multi-GPU sharding (70B only) |
+| `wandb` | Experiment tracking |
+| `pydantic>=2.0` | Environment type contracts |
+
+---
+
+## Tier 1: T4 Training (8B Model)
+
+**Target:** Google Colab Free / Kaggle T4 (15 GB VRAM)
+**Script:** `train_ppo.py`
+**Model:** `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit`
+**Peak VRAM:** ~10 GB / 15 GB
+
+### Colab Setup (Copy-Paste Cells)
 
 ```python
 %%capture
 # ═══════════════════════════════════════════════════════════
-# CELL 1: Install Memex PPO Training Stack
-# Runtime: GPU → T4 (free) or A100 (Pro)
+# CELL 1: Install Training Stack
+# Runtime → GPU → T4 (free) or A100 (Pro)
 # ═══════════════════════════════════════════════════════════
 
 import torch
@@ -16,17 +41,17 @@ print(f"GPU: {torch.cuda.get_device_name(0)} | Compute: {major}.{minor}")
 # Unsloth — 4-bit quantized model loading + LoRA
 !pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 
-# Flash Attention (only for Ampere+, skip on T4)
+# Flash Attention (Ampere+ only, skip on T4)
 if major >= 8:
     !pip install --no-deps packaging ninja einops "flash-attn>=2.6.3"
 
-# TRL (PPO reference), PEFT, Accelerate, BitsAndBytes
+# RL + adapter stack
 !pip install --no-deps trl peft accelerate bitsandbytes
 
-# Experiment tracking + project deps
+# Tracking + project deps
 !pip install wandb pydantic>=2.0.0
 
-# Verify imports
+# Verify
 from unsloth import FastLanguageModel
 import trl, peft, wandb
 print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
@@ -34,28 +59,25 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 2: Upload the Memex project or mount drive
+# CELL 2: Clone the project
 # ═══════════════════════════════════════════════════════════
 
-# Option A: Clone from GitHub
-# !git clone https://github.com/YOUR_ORG/MetaHack.git
-# %cd MetaHack
-
-# Option B: Upload zip and extract
-# from google.colab import files
-# uploaded = files.upload()
-# !unzip MetaHack.zip
-# %cd MetaHack
-
-# Option C: Mount Google Drive
-# from google.colab import drive
-# drive.mount('/content/drive')
-# %cd /content/drive/MyDrive/MetaHack
+!git clone https://github.com/razancodes/Meta-Pytorch-Hackathon.git
+%cd Meta-Pytorch-Hackathon
 ```
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 3: Dry-run validation (2 iterations, no WandB)
+# CELL 3: Verify environment (no GPU needed)
+# ═══════════════════════════════════════════════════════════
+
+!python tests/test_smoke.py
+# Expected: 7/7 tests passed ✓
+```
+
+```python
+# ═══════════════════════════════════════════════════════════
+# CELL 4: Dry-run (2 iterations, 1 episode, no WandB)
 # ═══════════════════════════════════════════════════════════
 
 !python train_ppo.py --dry-run
@@ -63,7 +85,7 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 4: Full training run
+# CELL 5: Full training (~2.5 hours on T4)
 # ═══════════════════════════════════════════════════════════
 
 import wandb
@@ -81,7 +103,7 @@ wandb.login()
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 5: Evaluate best checkpoint
+# CELL 6: Evaluate best checkpoint (9 combos)
 # ═══════════════════════════════════════════════════════════
 
 !python train_ppo.py --eval checkpoints/best
@@ -89,16 +111,16 @@ wandb.login()
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 6: Demo (1MDB) — scripted or with trained model
+# CELL 7: Run 1MDB demo + download AGUI replay
 # ═══════════════════════════════════════════════════════════
 
-# Scripted demo (no GPU needed)
+# Scripted (deterministic, no GPU)
 !python demo_eval.py --dry-run
 
 # With trained model
 # !python demo_eval.py --model checkpoints/best
 
-# Download replay files for the Next.js frontend
+# Download replay files for Next.js frontend
 # from google.colab import files
 # !zip -r demo_output.zip demo_output/
 # files.download('demo_output.zip')
@@ -106,35 +128,96 @@ wandb.login()
 
 ---
 
-## Hardware Requirements
+## Tier 2: A100 Cluster Training (70B Model)
 
-| Resource | T4 (Free Tier) | A100 (Pro) |
-|----------|---------------|------------|
-| VRAM | 15 GB | 40+ GB |
-| Est. per iteration | ~3 min | ~1 min |
-| 50 iterations | ~2.5 hrs | ~50 min |
-| Fits 8B 4-bit | ✓ (~10 GB peak) | ✓ |
+**Target:** Multi-node A100-80GB (on-site compute / cloud)
+**Script:** `train_ppo_70b.py`
+**Model:** `meta-llama/Meta-Llama-3.1-70B-Instruct`
+**Backend:** DeepSpeed ZeRO-3
+**Peak VRAM:** ~50 GB / 80 GB per GPU
 
-## WandB Metrics
+### VRAM Budget (4× A100-80GB)
+
+| Component | Total | Per-GPU (sharded) |
+|-----------|-------|-------------------|
+| Weights (4-bit NF4) | ~35 GB | ~9 GB |
+| LoRA adapters (r=32) | ~150 MB | replicated |
+| Optimizer (fp32 AdamW) | ~280 GB | ~70 GB |
+| Gradients (bf16) | ~140 GB | ~35 GB |
+| **Peak** | — | **~50 GB / 80 GB** |
+
+### Launch Commands
+
+```bash
+# Install (on each node)
+pip install deepspeed unsloth trl peft accelerate bitsandbytes wandb
+
+# 4-GPU single-node
+deepspeed --num_gpus 4 train_ppo_70b.py \
+    --iterations 50 --episodes 2
+
+# 8-GPU multi-node (2 nodes × 4 GPUs)
+deepspeed --num_gpus 4 --num_nodes 2 --hostfile hosts.txt \
+    train_ppo_70b.py --iterations 50 --episodes 2
+
+# With CPU offloading (fewer GPUs, slower)
+deepspeed --num_gpus 2 train_ppo_70b.py \
+    --offload-optimizer --offload-params
+
+# Dry-run
+deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
+
+# Evaluate
+python train_ppo_70b.py --eval checkpoints_70b/best
+```
+
+### Key Architectural Details
+
+1. **Rank-0 environment:** Only GPU 0 runs the AML environment. Trajectories are broadcast to all ranks via `torch.distributed.broadcast_object_list()`.
+2. **`disable_adapter()` KL trick:** Works under ZeRO-3 — LoRA operates at module level, independent of parameter sharding. No second model copy needed.
+3. **DeepSpeed engine:** Handles `backward()`, gradient accumulation, all-reduce, and clipping internally.
+4. **Checkpoints:** `engine.save_checkpoint()` saves sharded optimizer states per-rank. Tokenizer saved by rank 0 only.
+
+---
+
+## WandB Monitoring
 
 | Metric | Healthy Range | What to Watch |
 |--------|---------------|---------------|
-| `ppo/returns/mean` | 0.0 → +0.8 | Main training signal |
-| `ppo/loss/policy` | Decreasing | Should stabilize |
-| `ppo/kl` | < 0.5 | Spike = policy diverging |
-| `os/page_faults` | Decreasing | Agent learning memory management |
-| `os/async_timeouts` | → 0 | Agent learning patience |
+| `ppo/returns/mean` | 0.0 → +0.8 over training | Main signal — should increase |
+| `ppo/loss/policy` | Decreasing, then stable | Convergence indicator |
+| `ppo/kl` | < 0.5 | Spike = policy diverging from base |
+| `os/page_faults` | Decreasing → 0 | Agent learning memory management |
+| `os/async_timeouts` | Decreasing → 0 | Agent learning to wait for async I/O |
+| `os/successful_pages` | Increasing | Agent using disk writes proactively |
+| `os/meta_injections` | ≥ 1 per episode | Agent injecting compliance rules |
+
+---
+
+## Hardware Reference
+
+| Config | GPU | VRAM | Script | Model | Est. 50 iters |
+|--------|-----|------|--------|-------|---------------|
+| Colab Free | T4 | 15 GB | `train_ppo.py` | 8B 4-bit | ~2.5 hrs |
+| Colab Pro | A100-40GB | 40 GB | `train_ppo.py` | 8B 4-bit | ~50 min |
+| On-site | 4× A100-80GB | 320 GB | `train_ppo_70b.py` | 70B 4-bit | ~4 hrs |
+| On-site | 8× A100-80GB | 640 GB | `train_ppo_70b.py` | 70B 4-bit | ~2 hrs |
+
+---
 
 ## File Reference
 
 | File | Purpose |
 |------|---------|
-| `train_ppo.py` | Custom PPO trainer (Unsloth + LoRA, T4-optimized) |
+| `train_ppo.py` | Step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
+| `train_ppo_70b.py` | Multi-GPU PPO (DeepSpeed ZeRO-3, A100 cluster) |
 | `demo_eval.py` | 1MDB demo with AGUI replay capture |
-| `server/aml_environment.py` | Memex environment (reset/step API) |
-| `scenarios/procedural_generator.py` | Dynamic scenario generation |
-| `graders/grader.py` | Dense reward matrix (-1.0 to +1.0) |
-| `state_manager.py` | OS mechanics (RAM, Disk, Async, Kernel) |
+| `server/aml_environment.py` | Core environment (15 tools + OS mechanics) |
+| `scenarios/procedural_generator.py` | Procedural POMDP scenario builder |
+| `graders/grader.py` | Dense reward engine (per-step + terminal) |
+| `state_manager.py` | OS mechanics (RAM, Disk, Async Queue, Kernel) |
+| `models.py` | Pydantic type definitions |
 | `tests/test_smoke.py` | Environment verification (7/7 tests) |
+| `checkpoints/` | T4 training output (LoRA adapters + tokenizer) |
+| `checkpoints_70b/` | 70B training output (DeepSpeed sharded checkpoints) |
 | `demo_output/` | AGUI JSON payloads for frontend replay |
-| `checkpoints/` | Saved LoRA adapters + tokenizer |
