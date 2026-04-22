@@ -52,6 +52,11 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+try:
+    import deepspeed
+except ImportError:
+    deepspeed = None  # Allows dry-run on machines without DeepSpeed
+
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -666,8 +671,8 @@ class MemexPPO70B:
         # on all ranks. Only rank 0 does I/O.
         gather_ctx = (
             deepspeed.zero.GatheredParameters(trainable, modifier_rank=0)
-            if self.engine and hasattr(deepspeed.zero, 'GatheredParameters')
-            else torch.no_grad()  # no-op context for non-ZeRO
+            if self.engine and deepspeed is not None and hasattr(deepspeed, 'zero') and hasattr(deepspeed.zero, 'GatheredParameters')
+            else torch.no_grad()  # no-op context for non-ZeRO / no DeepSpeed
         )
         with gather_ctx:
             if not is_main_process():
@@ -806,7 +811,8 @@ def train(cfg: PPOConfig70B) -> None:
 
     # ── 3. Initialize DeepSpeed ──
     log("[3/5] Initializing DeepSpeed engine...")
-    import deepspeed
+    if deepspeed is None:
+        raise ImportError("DeepSpeed is required for 70B training. Install: pip install deepspeed")
 
     ds_config = build_ds_config(cfg)
 

@@ -777,7 +777,12 @@ def train(cfg: PPOConfig) -> None:
                 cfg.lr = cfg.lr * 0.7
                 ppo.cfg = cfg
 
-                # 4. Rebuild optimizer with new LR and correct remaining schedule
+                # 4. Free old optimizer state (momentum/variance tensors) BEFORE allocating new
+                del ppo.optimizer, ppo.scheduler
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                # 5. Rebuild optimizer with new LR and correct remaining schedule
                 ppo.rebuild_optimizer(remaining_iters=iters - it)
 
                 print(
