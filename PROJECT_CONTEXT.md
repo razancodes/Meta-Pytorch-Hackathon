@@ -149,14 +149,14 @@ The training loop includes production-grade safety features to prevent policy co
 - **Degenerate response detection:** If a model response has >80% repeated tokens (e.g., "Search search search..."), the episode is terminated early with a -0.15 penalty.
 - **KL early stopping:** If mean KL exceeds ±15 during a PPO epoch, remaining epochs are skipped to prevent catastrophic gradient updates.
 - **Type-safe `parse_action()`:** All JSON parsing forces `params` to dict type, catches `TypeError`/`ValueError`, and never crashes regardless of model output.
-- **Auto-Revert ("Time Machine"):** Entropy heartbeat monitor detects collapse (entropy <0.01 ×2 iters, score ≤0 ×2 iters, |KL|>10) and auto-reverts to last stable checkpoint with bumped hyperparameters (entropy_coef ×1.5, temperature +0.1, lr ×0.7). Max 5 reverts per run.
+- **Auto-Revert ("Time Machine"):** Entropy heartbeat monitor detects collapse (entropy <0.01 ×2 iters, score ≤0 ×2 iters, |KL|>10) and auto-reverts to last stable checkpoint with bumped hyperparameters (entropy_coef ×1.5, temperature +0.1, lr ×0.7). Old optimizer state is explicitly freed before rebuild to prevent VRAM doubling. Max 5 reverts per run. On ZeRO-3, stable checkpoints use `GatheredParameters` to materialize full tensors from shards.
 
 ### 5. DPO Continuous Learning Pipeline
 
 A human-in-the-loop feedback system for post-deployment improvement:
 
-- **Frontend:** Prisma-backed SQLite database stores `PreferencePair` records (original prompt + rejected/chosen responses). Next.js API route (`/api/preferences`) exposes POST/GET/PATCH endpoints.
-- **DPO Trainer (`train_dpo.py`):** Pulls unconsumed pairs, runs DPO loss (`-log σ(β × Δ)`) against frozen base using the same `disable_adapter()` trick, saves updated LoRA adapters.
+- **Frontend:** Prisma-backed SQLite database (WAL mode for concurrent access) stores `PreferencePair` records (original prompt + rejected/chosen responses). Next.js API route (`/api/preferences`) exposes POST/GET/PATCH endpoints.
+- **DPO Trainer (`train_dpo.py`):** Pulls unconsumed pairs, runs DPO loss (`-log σ(β × Δ)`) against frozen base using the same `disable_adapter()` trick, with `clip_grad_norm_(1.0)` to prevent explosions from adversarial pairs. Saves updated LoRA adapters.
 - **Hot-Swap (`hotswap.py`):** Reloads updated adapters into a live model with zero downtime. Dual-method: PEFT `load_adapter()` → manual state dict injection fallback.
 
 ---

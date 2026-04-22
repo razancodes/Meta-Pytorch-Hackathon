@@ -210,12 +210,15 @@ The training loop includes an **Entropy Heartbeat Monitor** that detects irrever
 | KL explosion | `\|KL\| > 10.0` in any iteration |
 
 **On revert:**
-1. Purge VRAM (`torch.cuda.empty_cache()`)
+1. Free old optimizer state + purge VRAM (`del optimizer` → `gc.collect()` → `torch.cuda.empty_cache()`)
 2. Reload LoRA weights from last stable checkpoint
 3. Bump `entropy_coef × 1.5`, `temperature + 0.1`, `lr × 0.7`
-4. Rebuild optimizer and resume training
+4. Rebuild optimizer with correct remaining cosine schedule
+5. (70B) Explicitly update DeepSpeed `engine.optimizer.param_groups` LR
 
 Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Maximum 5 reverts per run.
+
+> **ZeRO-3 Safety:** On multi-GPU clusters, stable checkpoints use `deepspeed.zero.GatheredParameters` to materialize full tensors from shards before saving. Without this, each rank would save its own 1/N shard — corrupting every checkpoint silently.
 
 ### Hyperparameters
 

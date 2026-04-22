@@ -88,6 +88,14 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │                                                                      │
 │  Step-Level PPO: every tool call gets a reward signal               │
 │  KL via LoRA toggle: no second model copy needed                    │
+│  Auto-Revert: entropy heartbeat + checkpoint time machine           │
+└──────────────────────────────────────────────────────────────────────┘
+                                │
+┌──────────────────────────────────────────────────────────────────────┐
+│                  CONTINUOUS LEARNING (DPO Pipeline)                  │
+│                                                                      │
+│  Frontend → /api/preferences → SQLite → train_dpo.py → hotswap.py  │
+│  Human corrections → DPO loss → Updated LoRA → Zero-downtime swap  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -222,6 +230,8 @@ python demo_eval.py --model checkpoints/best
 ├── inference.py                 # ReAct agent (OS-aware)
 ├── train_ppo.py                 # PPO trainer (T4, 8B)
 ├── train_ppo_70b.py             # PPO trainer (A100 cluster, 70B)
+├── train_dpo.py                 # DPO continuous learning (offline)
+├── hotswap.py                   # Zero-downtime LoRA adapter swap
 ├── demo_eval.py                 # 1MDB demo + AGUI replay
 ├── Dockerfile                   # HF Spaces deployment
 ├── openenv.yaml                 # OpenEnv contract
@@ -234,6 +244,9 @@ python demo_eval.py --model checkpoints/best
 ├── server/
 │   ├── app.py                   # FastAPI (OpenEnv-compatible)
 │   └── aml_environment.py       # Core env (15 tools + OS mechanics)
+├── frontend/
+│   ├── prisma/schema.prisma     # DPO preference pair database
+│   └── app/api/preferences/     # Correction capture API
 └── tests/
     └── test_smoke.py            # 7 end-to-end tests
 ```
@@ -252,7 +265,7 @@ docker run -p 8000:8000 memex
 ## Further Reading
 
 - [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — Full architecture, AGUI data contract, VRAM calculations, 70B scaling analysis
-- [TRAINING.md](TRAINING.md) — Copy-paste Colab/Kaggle cells for T4 training
+- [TRAINING.md](TRAINING.md) — Copy-paste Colab/Kaggle cells, stability engineering features, DPO pipeline setup
 
 ---
 
