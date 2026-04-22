@@ -1,0 +1,574 @@
+/* ═══════════════════════════════════════════════════════════════
+   NEXUS — Case Intelligence Terminal Styles
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Container & Top Bar ──────────────────── */
+.caseContainer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  animation: nx-fade-in 0.6s ease;
+}
+
+.caseTopBar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #0A0A0A;
+  border-bottom: 1px solid #1A1A1A;
+  flex-shrink: 0;
+  height: 44px;
+}
+
+.caseInfo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.caseId {
+  font-size: 11px;
+  font-weight: 700;
+  color: #EA580C;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.caseSep {
+  color: #1A1A1A;
+  font-size: 14px;
+}
+
+.caseSummary {
+  font-size: 10px;
+  color: #737373;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.caseProgress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.caseStep {
+  font-size: 14px;
+  font-weight: 700;
+  color: #D4D4D4;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Three-Panel Layout ───────────────────── */
+.panelLayout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* ── Environment State Panel (Left) ───────── */
+.envPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  height: 100%;
+  overflow-y: auto;
+  background: #000;
+}
+
+.envEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #404040;
+  font-size: 11px;
+  gap: 8px;
+}
+
+.envEmptyIcon {
+  font-size: 28px;
+  opacity: 0.3;
+}
+
+.envRamFull {
+  animation: nx-pulse-red 2s ease-in-out infinite;
+}
+
+/* RAM */
+.ramBar {
+  height: 4px;
+  background: #1A1A1A;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.ramFill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s, background 0.4s;
+}
+
+.ramSlots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ramSlot {
+  padding: 6px 8px;
+  background: #0F0F0F;
+  border: 1px solid #1A1A1A;
+  border-radius: 2px;
+}
+
+.ramSlotEmpty {
+  opacity: 0.3;
+  border-style: dashed;
+}
+
+.ramSlotLabel {
+  font-size: 8px;
+  color: #404040;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.ramSlotText {
+  font-size: 9px;
+  color: #737373;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* Disk */
+.diskBody {
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.diskEmpty {
+  font-size: 10px;
+  color: #404040;
+}
+
+.diskEntry {
+  display: flex;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid #0F0F0F;
+  animation: nx-highlight-flash 1s ease-out;
+}
+
+.diskIndex {
+  font-size: 9px;
+  color: #22C55E;
+  flex-shrink: 0;
+  min-width: 16px;
+}
+
+.diskText {
+  font-size: 10px;
+  color: #D4D4D4;
+  line-height: 1.4;
+}
+
+/* Async Jobs */
+.asyncJob {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 10px;
+}
+
+.asyncId {
+  color: #EA580C;
+  font-weight: 600;
+  min-width: 60px;
+}
+
+.asyncTool {
+  color: #737373;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Kernel */
+.kernelBody {
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.kernelEntry {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 10px;
+}
+
+.kernelText {
+  color: #D4D4D4;
+  line-height: 1.4;
+}
+
+/* Reward */
+.rewardRow {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.rewardMetric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rewardValue {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.rewardValueSm {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Progress */
+.progressBar {
+  height: 4px;
+  background: #1A1A1A;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: #EA580C;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+/* ── Entity Graph (Center) ────────────────── */
+.graphContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: #000;
+  background-image: 
+    radial-gradient(circle at 50% 50%, rgba(234, 88, 12, 0.05) 0%, transparent 60%),
+    linear-gradient(rgba(26, 26, 26, 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(26, 26, 26, 0.5) 1px, transparent 1px);
+  background-size: 100% 100%, 20px 20px, 20px 20px;
+  background-position: center center;
+  border-left: 1px solid #1A1A1A;
+  border-right: 1px solid #1A1A1A;
+  position: relative;
+}
+
+.graphCanvas {
+  flex: 1;
+  min-height: 0;
+}
+
+.graphTooltip {
+  position: absolute;
+  z-index: 100;
+  background: rgba(10, 10, 10, 0.95);
+  border: 1px solid #1A1A1A;
+  border-radius: 2px;
+  padding: 10px 12px;
+  min-width: 160px;
+  max-width: 220px;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  animation: tooltipFadeIn 0.15s ease;
+}
+
+@keyframes tooltipFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ttHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.ttType {
+  font-size: 9px;
+  color: #404040;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ttRisk {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.ttName {
+  font-size: 12px;
+  font-weight: 600;
+  color: #EEEEEE;
+  margin-bottom: 4px;
+}
+
+.ttRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #737373;
+  padding: 2px 0;
+}
+
+.ttRow span:last-child {
+  color: #D4D4D4;
+}
+
+.ttFlag {
+  font-size: 9px;
+  color: #E11D48;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #1A1A1A;
+}
+
+/* Detail Tray */
+.detailTray {
+  position: absolute;
+  right: 0;
+  top: 32px;
+  bottom: 0;
+  width: 240px;
+  background: rgba(10, 10, 10, 0.97);
+  border-left: 1px solid #1A1A1A;
+  z-index: 50;
+  animation: slideInRight 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.detailHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #1A1A1A;
+}
+
+.detailTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: #EEEEEE;
+}
+
+.detailBody {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detailRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #D4D4D4;
+}
+
+.detailFlag {
+  font-size: 10px;
+  color: #E11D48;
+  padding: 6px 8px;
+  background: rgba(225, 29, 72, 0.08);
+  border: 1px solid rgba(225, 29, 72, 0.2);
+  border-radius: 2px;
+}
+
+/* ── Agent Terminal (Right) ───────────────── */
+.terminalContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #000;
+}
+
+.terminalBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.termEntry {
+  padding: 8px;
+  margin-bottom: 4px;
+  border: 1px solid #0F0F0F;
+  border-radius: 2px;
+  background: #050505;
+}
+
+.termEntryFinal {
+  border-color: #22C55E;
+  background: rgba(34, 197, 94, 0.03);
+}
+
+.termStepHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.termStepNum {
+  font-size: 9px;
+  font-weight: 700;
+  color: #EA580C;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.termReward {
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.termReasoning {
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  background: #0A0A0A;
+  border-left: 2px solid #EA580C;
+  border-radius: 0 2px 2px 0;
+}
+
+.termReasonLabel {
+  font-size: 8px;
+  color: #404040;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.termReasonText {
+  font-size: 10px;
+  color: #D4D4D4;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.termPrompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.termPS1 {
+  font-size: 10px;
+  color: #22C55E;
+  flex-shrink: 0;
+}
+
+.termCmd {
+  font-size: 11px;
+  color: #EEEEEE;
+  font-weight: 600;
+}
+
+.termParams {
+  padding: 4px 8px;
+  margin: 2px 0 4px 0;
+  background: #0A0A0A;
+  border-radius: 2px;
+}
+
+.termParam {
+  font-size: 9px;
+  display: flex;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.termParamKey {
+  color: #06B6D4;
+  flex-shrink: 0;
+}
+
+.termParamVal {
+  color: #737373;
+  word-break: break-all;
+}
+
+.termOutput {
+  font-size: 10px;
+  color: #737373;
+  line-height: 1.4;
+  padding-left: 2px;
+}
+
+.termFinal {
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(34, 197, 94, 0.06);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #22C55E;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.termFinalIcon {
+  margin-right: 6px;
+  animation: nx-pulse 1s ease infinite;
+}
+
+.termCursor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.termBlink {
+  color: #22C55E;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}

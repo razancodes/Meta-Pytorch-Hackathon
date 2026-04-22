@@ -1,0 +1,425 @@
+/* ═══════════════════════════════════════════════════════════════
+   NEXUS — Financial Crime Intelligence Terminal
+   Design System & Global Styles
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Reset ────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Design Tokens ────────────────────────────────────────────── */
+:root {
+  /* Base palette */
+  --nx-black:        #000000;
+  --nx-surface:      #0A0A0A;
+  --nx-surface-alt:  #0F0F0F;
+  --nx-border:       #1A1A1A;
+  --nx-border-hover: #2A2A2A;
+  --nx-muted:        #404040;
+  --nx-text:         #D4D4D4;
+  --nx-text-dim:     #737373;
+  --nx-text-bright:  #EEEEEE;
+
+  /* Accents */
+  --nx-orange:       #EA580C;
+  --nx-orange-dim:   #9A3412;
+  --nx-orange-glow:  rgba(234, 88, 12, 0.15);
+  --nx-orange-glow2: rgba(234, 88, 12, 0.06);
+  --nx-red:          #E11D48;
+  --nx-red-dim:      #9F1239;
+  --nx-red-glow:     rgba(225, 29, 72, 0.15);
+  --nx-green:        #22C55E;
+  --nx-green-dim:    #15803D;
+  --nx-green-glow:   rgba(34, 197, 94, 0.15);
+  --nx-yellow:       #EAB308;
+  --nx-yellow-dim:   #A16207;
+  --nx-cyan:         #06B6D4;
+
+  /* Geometry */
+  --nx-radius:       2px;
+  --nx-border-width: 1px;
+
+  /* Spacing */
+  --nx-gap-xs: 4px;
+  --nx-gap-sm: 8px;
+  --nx-gap-md: 12px;
+  --nx-gap-lg: 16px;
+  --nx-gap-xl: 24px;
+
+  /* Typography */
+  --nx-font: 'JetBrains Mono', monospace;
+  --nx-fs-xs:  9px;
+  --nx-fs-sm:  10px;
+  --nx-fs-md:  12px;
+  --nx-fs-lg:  14px;
+  --nx-fs-xl:  16px;
+  --nx-fs-xxl: 20px;
+
+  /* Transitions */
+  --nx-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --nx-duration: 200ms;
+}
+
+body {
+  background: var(--nx-black);
+  color: var(--nx-text);
+  font-family: var(--nx-font);
+  font-size: var(--nx-fs-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Panel System ─────────────────────────────────────────────── */
+.nx-panel {
+  background: var(--nx-surface);
+  border: var(--nx-border-width) solid var(--nx-border);
+  border-radius: var(--nx-radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.nx-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--nx-gap-sm) var(--nx-gap-md);
+  border-bottom: var(--nx-border-width) solid var(--nx-border);
+  background: var(--nx-surface-alt);
+}
+
+.nx-panel-title {
+  font-size: var(--nx-fs-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--nx-text-dim);
+}
+
+.nx-panel-body {
+  padding: var(--nx-gap-md);
+}
+
+.nx-panel-badge {
+  font-size: var(--nx-fs-xs);
+  padding: 2px 6px;
+  border-radius: var(--nx-radius);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+/* ── Labels & Tags ────────────────────────────────────────────── */
+.nx-label {
+  font-size: var(--nx-fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--nx-text-dim);
+  font-weight: 500;
+}
+
+.nx-value {
+  font-size: var(--nx-fs-lg);
+  color: var(--nx-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.nx-tag {
+  display: inline-block;
+  font-size: var(--nx-fs-xs);
+  padding: 1px 5px;
+  border-radius: var(--nx-radius);
+  border: 1px solid var(--nx-border);
+  color: var(--nx-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nx-tag--orange {
+  color: var(--nx-orange);
+  border-color: var(--nx-orange-dim);
+  background: var(--nx-orange-glow2);
+}
+
+.nx-tag--red {
+  color: var(--nx-red);
+  border-color: var(--nx-red-dim);
+  background: var(--nx-red-glow);
+}
+
+.nx-tag--green {
+  color: var(--nx-green);
+  border-color: var(--nx-green-dim);
+  background: var(--nx-green-glow);
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--nx-black);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--nx-muted);
+  border-radius: var(--nx-radius);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--nx-text-dim);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--nx-muted) var(--nx-black);
+}
+
+/* ── Animations ───────────────────────────────────────────────── */
+
+/* Scan-line sweep on initial load */
+@keyframes nx-scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.nx-scanline-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(234, 88, 12, 0.08),
+    transparent
+  );
+  z-index: 9999;
+  pointer-events: none;
+  animation: nx-scanline 3s ease-in-out infinite;
+}
+
+/* Digit flicker for value updates */
+@keyframes nx-flicker {
+  0%, 100% { opacity: 1; }
+  10% { opacity: 0.3; }
+  20% { opacity: 0.8; }
+  30% { opacity: 0.4; }
+  40% { opacity: 1; }
+  50% { opacity: 0.6; }
+  60% { opacity: 1; }
+}
+
+.nx-flicker {
+  animation: nx-flicker 0.3s ease-in-out;
+}
+
+/* Pulse for critical elements */
+@keyframes nx-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes nx-pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--nx-orange-glow); }
+  50% { box-shadow: 0 0 12px 4px var(--nx-orange-glow); }
+}
+
+@keyframes nx-pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 var(--nx-red-glow); }
+  50% { box-shadow: 0 0 12px 4px var(--nx-red-glow); }
+}
+
+.nx-pulse {
+  animation: nx-pulse 2s ease-in-out infinite;
+}
+
+.nx-pulse-glow {
+  animation: nx-pulse-glow 2s ease-in-out infinite;
+}
+
+/* Slide-in from left */
+@keyframes nx-slide-in-left {
+  from { transform: translateX(-100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Slide-in from right */
+@keyframes nx-slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Slide-in from bottom */
+@keyframes nx-slide-in-up {
+  from { transform: translateY(40px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* Fade in */
+@keyframes nx-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Loading dots */
+@keyframes nx-dots {
+  0%, 20% { content: '.'; }
+  40% { content: '..'; }
+  60%, 100% { content: '...'; }
+}
+
+/* CRT horizontal wipe */
+@keyframes nx-crt-wipe {
+  0% {
+    clip-path: inset(0 0 100% 0);
+  }
+  100% {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* Arc flow animation */
+@keyframes nx-arc-flow {
+  from { stroke-dashoffset: 20; }
+  to { stroke-dashoffset: 0; }
+}
+
+/* Data flow dash animation */
+@keyframes nx-dash-flow {
+  to { stroke-dashoffset: -40; }
+}
+
+/* Glow breathe */
+@keyframes nx-glow-breathe {
+  0%, 100% { filter: drop-shadow(0 0 2px var(--nx-orange)); }
+  50% { filter: drop-shadow(0 0 8px var(--nx-orange)); }
+}
+
+/* Highlight flash for new items */
+@keyframes nx-highlight-flash {
+  0% { background-color: var(--nx-orange-glow); }
+  100% { background-color: transparent; }
+}
+
+.nx-highlight-new {
+  animation: nx-highlight-flash 1.5s ease-out;
+}
+
+/* ── Utility ──────────────────────────────────────────────────── */
+.nx-mono { font-family: var(--nx-font); }
+.nx-uppercase { text-transform: uppercase; letter-spacing: 0.08em; }
+.nx-tabular { font-variant-numeric: tabular-nums; }
+.nx-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nx-center { display: flex; align-items: center; justify-content: center; }
+.nx-no-select { user-select: none; }
+
+/* Status colors */
+.nx-status-ok { color: var(--nx-green); }
+.nx-status-warn { color: var(--nx-yellow); }
+.nx-status-danger { color: var(--nx-red); }
+.nx-status-active { color: var(--nx-orange); }
+
+/* ── Resizer Handle ───────────────────────────────────────────── */
+.nx-resizer {
+  width: 4px;
+  cursor: col-resize;
+  background: var(--nx-border);
+  transition: background var(--nx-duration) var(--nx-ease);
+  flex-shrink: 0;
+  position: relative;
+}
+
+.nx-resizer:hover,
+.nx-resizer:active {
+  background: var(--nx-orange-dim);
+}
+
+.nx-resizer::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 24px;
+  background: var(--nx-muted);
+  border-radius: 1px;
+}
+
+.nx-resizer:hover::after {
+  background: var(--nx-orange);
+}
+
+/* ── Button ───────────────────────────────────────────────────── */
+.nx-btn {
+  font-family: var(--nx-font);
+  font-size: var(--nx-fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 12px;
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius);
+  background: var(--nx-surface);
+  color: var(--nx-text-dim);
+  cursor: pointer;
+  transition: all var(--nx-duration) var(--nx-ease);
+}
+
+.nx-btn:hover {
+  border-color: var(--nx-orange-dim);
+  color: var(--nx-orange);
+  background: var(--nx-orange-glow2);
+}
+
+.nx-btn--active {
+  border-color: var(--nx-orange);
+  color: var(--nx-orange);
+  background: var(--nx-orange-glow2);
+}
+
+.nx-btn--primary {
+  border-color: var(--nx-orange-dim);
+  color: var(--nx-orange);
+  background: var(--nx-orange-glow2);
+}
+
+.nx-btn--primary:hover {
+  background: var(--nx-orange-glow);
+}
+
+/* ── Leaflet overrides (dark theme) ───────────────────────────── */
+.leaflet-container {
+  background: var(--nx-black) !important;
+  font-family: var(--nx-font) !important;
+}
+
+.leaflet-control-zoom a {
+  background: var(--nx-surface) !important;
+  color: var(--nx-text-dim) !important;
+  border-color: var(--nx-border) !important;
+  border-radius: var(--nx-radius) !important;
+  font-family: var(--nx-font) !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: var(--nx-surface-alt) !important;
+  color: var(--nx-orange) !important;
+}
+
+.leaflet-control-attribution {
+  display: none !important;
+}

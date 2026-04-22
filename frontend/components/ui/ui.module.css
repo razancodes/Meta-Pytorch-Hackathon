@@ -1,0 +1,96 @@
+.statusWrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.statusGreen { background: #22C55E; }
+.statusAmber { background: #EAB308; }
+.statusRed   { background: #E11D48; }
+
+.statusPulse {
+  animation: statusPulseAnim 2s ease-in-out infinite;
+}
+
+@keyframes statusPulseAnim {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
+  50% { opacity: 0.6; box-shadow: 0 0 6px 2px currentColor; }
+}
+
+.statusLabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #737373;
+}
+
+/* ── Replay Controls ─────────────────────────── */
+.replayBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #0A0A0A;
+  border: 1px solid #1A1A1A;
+  border-radius: 2px;
+}
+
+.replayBtn {
+  font-family: var(--nx-font, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  padding: 3px 8px;
+  border: 1px solid #1A1A1A;
+  border-radius: 2px;
+  background: transparent;
+  color: #737373;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.replayBtn:hover {
+  border-color: #EA580C;
+  color: #EA580C;
+}
+
+.replayBtnActive {
+  border-color: #EA580C;
+  color: #EA580C;
+  background: rgba(234, 88, 12, 0.06);
+}
+
+.replayScrubber {
+  flex: 1;
+  height: 3px;
+  appearance: none;
+  background: #1A1A1A;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.replayScrubber::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #EA580C;
+  cursor: pointer;
+}
+
+.replayStep {
+  font-size: 10px;
+  color: #737373;
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: center;
+}
