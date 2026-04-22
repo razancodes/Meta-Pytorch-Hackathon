@@ -28,6 +28,8 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | **Inference** | `inference.py` | ReAct agent loop with OS-mechanic awareness |
 | **PPO Trainer (T4)** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
 | **PPO Trainer (70B)** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster |
+| **DPO Trainer** | `train_dpo.py` | Offline DPO continuous learning from user preference pairs |
+| **LoRA Hot-Swap** | `hotswap.py` | Zero-downtime LoRA adapter reload into running models |
 | **Demo** | `demo_eval.py` | 1MDB-inspired demo with AGUI replay capture |
 | **Tests** | `tests/test_smoke.py` | 7 end-to-end smoke tests |
 
@@ -147,6 +149,15 @@ The training loop includes production-grade safety features to prevent policy co
 - **Degenerate response detection:** If a model response has >80% repeated tokens (e.g., "Search search search..."), the episode is terminated early with a -0.15 penalty.
 - **KL early stopping:** If mean KL exceeds ±15 during a PPO epoch, remaining epochs are skipped to prevent catastrophic gradient updates.
 - **Type-safe `parse_action()`:** All JSON parsing forces `params` to dict type, catches `TypeError`/`ValueError`, and never crashes regardless of model output.
+- **Auto-Revert ("Time Machine"):** Entropy heartbeat monitor detects collapse (entropy <0.01 ×2 iters, score ≤0 ×2 iters, |KL|>10) and auto-reverts to last stable checkpoint with bumped hyperparameters (entropy_coef ×1.5, temperature +0.1, lr ×0.7). Max 5 reverts per run.
+
+### 5. DPO Continuous Learning Pipeline
+
+A human-in-the-loop feedback system for post-deployment improvement:
+
+- **Frontend:** Prisma-backed SQLite database stores `PreferencePair` records (original prompt + rejected/chosen responses). Next.js API route (`/api/preferences`) exposes POST/GET/PATCH endpoints.
+- **DPO Trainer (`train_dpo.py`):** Pulls unconsumed pairs, runs DPO loss (`-log σ(β × Δ)`) against frozen base using the same `disable_adapter()` trick, saves updated LoRA adapters.
+- **Hot-Swap (`hotswap.py`):** Reloads updated adapters into a live model with zero downtime. Dual-method: PEFT `load_adapter()` → manual state dict injection fallback.
 
 ---
 

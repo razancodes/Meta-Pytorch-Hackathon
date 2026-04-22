@@ -650,6 +650,57 @@ class MemexPPO70B:
         else:
             log(f"  ⚠ No DeepSpeed engine — skipping checkpoint load")
 
+    # ── Stable Checkpoint (Auto-Revert) ─────────────────────────────────
+
+    def save_stable_state(self, path: str) -> None:
+        """Save LoRA weights as 'last known good' (rank 0 only for I/O)."""
+        if not is_main_process():
+            return
+        os.makedirs(path, exist_ok=True)
+        base = self.engine.module if self.engine else self.model
+        lora_state = {
+            k: v.cpu().clone()
+            for k, v in base.named_parameters() if v.requires_grad
+        }
+        torch.save(lora_state, os.path.join(path, "lora_state.pt"))
+        torch.save({
+            "entropy_coef": self.cfg.entropy_coef,
+            "temperature": self.cfg.temperature,
+            "lr": self.cfg.lr,
+            "reward_ema": self._reward_ema,
+        }, os.path.join(path, "hyperparams.pt"))
+
+    def load_stable_state(self, path: str) -> bool:
+        """Reload LoRA weights from stable checkpoint across all ranks."""
+        lora_path = os.path.join(path, "lora_state.pt")
+        if is_main_process() and not os.path.exists(lora_path):
+            exists = False
+        else:
+            exists = True
+        exists = broadcast_object(exists, src=0)
+        if not exists:
+            return False
+
+        # Rank 0 loads, then broadcasts
+        if is_main_process():
+            state = torch.load(lora_path, map_location="cpu", weights_only=True)
+            hp = torch.load(
+                os.path.join(path, "hyperparams.pt"),
+                map_location="cpu", weights_only=True,
+            )
+        else:
+            state = None
+            hp = None
+        state = broadcast_object(state, src=0)
+        hp = broadcast_object(hp, src=0)
+
+        base = self.engine.module if self.engine else self.model
+        for name, param in base.named_parameters():
+            if name in state:
+                param.data.copy_(state[name].to(self.device))
+        self._reward_ema = hp.get("reward_ema", 0.0)
+        return True
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # VRAM Monitoring
@@ -786,6 +837,14 @@ def train(cfg: PPOConfig70B) -> None:
     eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
     best_score = -float("inf")
 
+    # ── Auto-Revert State ──
+    stable_path = os.path.join(cfg.output_dir, "_stable")
+    stable_saved = False
+    low_entropy_streak = 0
+    low_score_streak = 0
+    revert_count = 0
+    max_reverts = 5
+
     for it in range(1, iters + 1):
         t0 = time.time()
         all_steps: List[StepData] = []
@@ -832,16 +891,94 @@ def train(cfg: PPOConfig70B) -> None:
         total_sp = sum(s.successful_pages for s in ep_stats)
         total_mi = sum(s.meta_injections for s in ep_stats)
         elapsed = time.time() - t0
+        entropy = ppo_stats["ppo/entropy"]
+        kl = ppo_stats["ppo/kl"]
 
         log(
             f"\n  ═══ Iter {it}/{iters} ═══\n"
             f"    Mean score:  {mean_score:+.4f}\n"
             f"    PPO loss:    {ppo_stats['ppo/loss/policy']:.6f}\n"
-            f"    KL:          {ppo_stats['ppo/kl']:.6f}\n"
-            f"    Entropy:     {ppo_stats['ppo/entropy']:.4f}\n"
+            f"    KL:          {kl:.6f}\n"
+            f"    Entropy:     {entropy:.4f}\n"
             f"    OS: PF={total_pf} AT={total_at} SP={total_sp} MI={total_mi}\n"
             f"    GPUs: {get_world_size()}  |  VRAM: {vram_status()}  |  {elapsed:.0f}s\n"
         )
+
+        # ── Entropy Heartbeat Monitor (Auto-Revert) ──────────────────
+        if entropy < 0.01:
+            low_entropy_streak += 1
+        else:
+            low_entropy_streak = 0
+
+        if mean_score <= 0.0:
+            low_score_streak += 1
+        else:
+            low_score_streak = 0
+
+        # Save stable checkpoint when healthy
+        if entropy > 0.05 and mean_score > 0.3:
+            ppo.save_stable_state(stable_path)
+            stable_saved = True
+
+        is_collapse = (
+            low_entropy_streak >= 2
+            or low_score_streak >= 2
+            or abs(kl) > 10.0
+        )
+
+        if is_collapse and stable_saved and revert_count < max_reverts:
+            revert_count += 1
+            log(
+                f"\n  ⚠️  COLLAPSE DETECTED (revert #{revert_count})  ⚠️\n"
+                f"    Trigger: entropy={entropy:.4f} | KL={kl:.4f} | "
+                f"score={mean_score:+.4f}\n"
+                f"    Purging VRAM and reloading stable checkpoint..."
+            )
+
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            success = ppo.load_stable_state(stable_path)
+            if not success:
+                log("    ❌ Failed to load stable state, continuing...")
+            else:
+                old_ec = cfg.entropy_coef
+                old_temp = cfg.temperature
+                old_lr = cfg.lr
+                cfg.entropy_coef = min(cfg.entropy_coef * 1.5, 0.20)
+                cfg.temperature = min(cfg.temperature + 0.1, 0.9)
+                cfg.lr = cfg.lr * 0.7
+                ppo.cfg = cfg
+
+                # Note: DeepSpeed manages the optimizer internally.
+                # The LR change takes effect via the scheduler step.
+
+                log(
+                    f"    ✅ Reverted successfully.\n"
+                    f"    entropy_coef: {old_ec:.4f} → {cfg.entropy_coef:.4f}\n"
+                    f"    temperature:  {old_temp:.2f} → {cfg.temperature:.2f}\n"
+                    f"    lr:           {old_lr:.2e} → {cfg.lr:.2e}\n"
+                )
+
+            low_entropy_streak = 0
+            low_score_streak = 0
+
+            if not cfg.dry_run and is_main_process():
+                import wandb
+                wandb.log({
+                    "revert/count": revert_count,
+                    "revert/entropy_coef": cfg.entropy_coef,
+                    "revert/temperature": cfg.temperature,
+                    "revert/lr": cfg.lr,
+                    "revert/trigger_entropy": entropy,
+                    "revert/trigger_kl": kl,
+                    "revert/trigger_score": mean_score,
+                })
+
+            del all_steps
+            gc.collect()
+            torch.cuda.empty_cache()
+            continue
 
         # ── WandB ──
         if not cfg.dry_run and is_main_process():
@@ -856,6 +993,9 @@ def train(cfg: PPOConfig70B) -> None:
                 "os/meta_injections": total_mi,
                 "perf/iter_seconds": elapsed,
                 "perf/vram_gb": torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
+                "stability/entropy_coef": cfg.entropy_coef,
+                "stability/temperature": cfg.temperature,
+                "stability/revert_count": revert_count,
             })
 
         # ── Checkpoint ──

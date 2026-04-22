@@ -193,10 +193,29 @@ Both trainers include **10 production-grade safety features** to prevent policy 
 | **Entropy bonus** | `- entropy_coef × H(π)` in loss | Keeps the policy exploring; prevents collapsing to a single degenerate action |
 | **Return clipping** | `clip(returns, -2.0, +2.0)` | Bounds gradient signals from outlier terminal rewards |
 | **Empty response guard** | Dummy EOS if model generates 0 tokens | Prevents NaN from `.mean()` on an empty tensor |
-| **Degenerate response detection** | If >80% repeated tokens, assign -0.15 penalty | Detects and penalizes gibberish output ("Search search search...") |
+| **Degenerate response detection** | If >80% repeated tokens, assign -0.15 penalty | Detects and penalizes gibberish output |
 | **Fault-tolerant env.step()** | try/except around environment step, -0.10 penalty | Malformed actions no longer crash the training loop |
 | **Type-safe parse_action()** | Force `params` to dict, catch TypeError/ValueError | Prevents `'str' object has no attribute 'get'` crashes |
 | **KL early stopping** | Break PPO epochs if \|KL\| > 15 | Prevents catastrophic gradient updates when policy drifts too far |
+| **🔄 Auto-Revert** | Entropy heartbeat monitor + checkpoint reload | Detects mode collapse and automatically reverts to last stable weights |
+
+### Auto-Revert ("Time Machine")
+
+The training loop includes an **Entropy Heartbeat Monitor** that detects irreversible collapse and auto-reverts:
+
+| Trigger | Condition |
+|---------|----------|
+| Entropy death | `entropy < 0.01` for 2 consecutive iterations |
+| Score death | `mean_score ≤ 0.0` for 2 consecutive iterations |
+| KL explosion | `\|KL\| > 10.0` in any iteration |
+
+**On revert:**
+1. Purge VRAM (`torch.cuda.empty_cache()`)
+2. Reload LoRA weights from last stable checkpoint
+3. Bump `entropy_coef × 1.5`, `temperature + 0.1`, `lr × 0.7`
+4. Rebuild optimizer and resume training
+
+Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Maximum 5 reverts per run.
 
 ### Hyperparameters
 
@@ -244,6 +263,8 @@ Both trainers include **10 production-grade safety features** to prevent policy 
 |------|---------|
 | `train_ppo.py` | Step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
 | `train_ppo_70b.py` | Multi-GPU PPO (DeepSpeed ZeRO-3, A100 cluster) |
+| `train_dpo.py` | Offline DPO trainer (continuous learning from user corrections) |
+| `hotswap.py` | Zero-downtime LoRA adapter hot-swap utility |
 | `demo_eval.py` | 1MDB demo with AGUI replay capture |
 | `server/aml_environment.py` | Core environment (15 tools + OS mechanics) |
 | `scenarios/procedural_generator.py` | Procedural POMDP scenario builder |
@@ -254,3 +275,40 @@ Both trainers include **10 production-grade safety features** to prevent policy 
 | `checkpoints/` | T4 training output (LoRA adapters + tokenizer) |
 | `checkpoints_70b/` | 70B training output (DeepSpeed sharded checkpoints) |
 | `demo_output/` | AGUI JSON payloads for frontend replay |
+| `frontend/prisma/schema.prisma` | Prisma schema for DPO preference pairs |
+| `frontend/app/api/preferences/` | Next.js API for capturing user corrections |
+
+---
+
+## Continuous Learning (DPO Pipeline)
+
+### Setup (Frontend)
+
+```bash
+cd frontend
+npm install @prisma/client prisma
+npx prisma init --datasource-provider sqlite
+# Copy schema from prisma/schema.prisma (already provided)
+npx prisma migrate dev --name init
+```
+
+### Workflow
+
+1. **User corrects agent output** → POST to `/api/preferences` with `originalPrompt`, `rejectedResponse`, `chosenResponse`
+2. **Batch DPO training** (run offline when enough pairs accumulate):
+   ```bash
+   python train_dpo.py --base-model checkpoints/best --db frontend/prisma/dev.db
+   ```
+3. **Hot-swap adapters** into running inference server:
+   ```bash
+   python hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit --adapter checkpoints/dpo-latest
+   ```
+
+### DPO Hyperparameters
+
+| Param | Value | Notes |
+|-------|-------|-------|
+| `beta` | `0.1` | DPO temperature (lower = more aggressive preference) |
+| `lr` | `1e-6` | Conservative to avoid catastrophic forgetting |
+| `epochs` | `3` | Per-batch passes |
+| `min_pairs` | `5` | Minimum pairs to trigger training |

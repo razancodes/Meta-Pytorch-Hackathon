@@ -537,6 +537,49 @@ class MemexPPO:
         self.tokenizer.save_pretrained(path)
         print(f"  💾 Saved: {path}")
 
+    # ── Stable Checkpoint (Auto-Revert) ─────────────────────────────────
+
+    def save_stable_state(self, path: str) -> None:
+        """Save LoRA weights + optimizer state as 'last known good'."""
+        os.makedirs(path, exist_ok=True)
+        lora_state = {
+            k: v.cpu().clone()
+            for k, v in self.model.named_parameters() if v.requires_grad
+        }
+        torch.save(lora_state, os.path.join(path, "lora_state.pt"))
+        torch.save(self.optimizer.state_dict(), os.path.join(path, "optim_state.pt"))
+        torch.save({
+            "entropy_coef": self.cfg.entropy_coef,
+            "temperature": self.cfg.temperature,
+            "lr": self.cfg.lr,
+            "reward_ema": self._reward_ema,
+        }, os.path.join(path, "hyperparams.pt"))
+
+    def load_stable_state(self, path: str) -> bool:
+        """Reload LoRA weights from stable checkpoint. Returns True on success."""
+        lora_path = os.path.join(path, "lora_state.pt")
+        if not os.path.exists(lora_path):
+            return False
+        state = torch.load(lora_path, map_location=self.device, weights_only=True)
+        for name, param in self.model.named_parameters():
+            if name in state:
+                param.data.copy_(state[name].to(self.device))
+        # Restore reward EMA to prevent baseline corruption
+        hp_path = os.path.join(path, "hyperparams.pt")
+        if os.path.exists(hp_path):
+            hp = torch.load(hp_path, map_location="cpu", weights_only=True)
+            self._reward_ema = hp.get("reward_ema", 0.0)
+        return True
+
+    def rebuild_optimizer(self) -> None:
+        """Recreate optimizer + scheduler with current config (after revert)."""
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        self.optimizer = torch.optim.AdamW(trainable, lr=self.cfg.lr)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=self.cfg.total_iterations,
+            eta_min=self.cfg.lr * 0.1,
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # VRAM Monitoring
@@ -612,6 +655,14 @@ def train(cfg: PPOConfig) -> None:
     eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
     best_score = -float("inf")
 
+    # ── Auto-Revert State ──
+    stable_path = os.path.join(cfg.output_dir, "_stable")
+    stable_saved = False
+    low_entropy_streak = 0
+    low_score_streak = 0
+    revert_count = 0
+    max_reverts = 5  # prevent infinite revert loops
+
     for it in range(1, iters + 1):
         t0 = time.time()
         all_steps: List[StepData] = []
@@ -655,16 +706,102 @@ def train(cfg: PPOConfig) -> None:
         total_sp = sum(s.successful_pages for s in ep_stats)
         total_mi = sum(s.meta_injections for s in ep_stats)
         elapsed = time.time() - t0
+        entropy = ppo_stats["ppo/entropy"]
+        kl = ppo_stats["ppo/kl"]
 
         print(
             f"\n  ═══ Iter {it}/{iters} ═══\n"
             f"    Mean score:  {mean_score:+.4f}\n"
             f"    PPO loss:    {ppo_stats['ppo/loss/policy']:.6f}\n"
-            f"    KL:          {ppo_stats['ppo/kl']:.6f}\n"
-            f"    Entropy:     {ppo_stats['ppo/entropy']:.4f}\n"
+            f"    KL:          {kl:.6f}\n"
+            f"    Entropy:     {entropy:.4f}\n"
             f"    OS: PF={total_pf} AT={total_at} SP={total_sp} MI={total_mi}\n"
             f"    VRAM: {vram_status()}  |  {elapsed:.0f}s\n"
         )
+
+        # ── Entropy Heartbeat Monitor (Auto-Revert) ──────────────────
+        # Track streaks
+        if entropy < 0.01:
+            low_entropy_streak += 1
+        else:
+            low_entropy_streak = 0
+
+        if mean_score <= 0.0:
+            low_score_streak += 1
+        else:
+            low_score_streak = 0
+
+        # Save stable checkpoint when training is healthy
+        if entropy > 0.05 and mean_score > 0.3:
+            ppo.save_stable_state(stable_path)
+            stable_saved = True
+
+        # Check for collapse
+        is_collapse = (
+            low_entropy_streak >= 2
+            or low_score_streak >= 2
+            or abs(kl) > 10.0
+        )
+
+        if is_collapse and stable_saved and revert_count < max_reverts:
+            revert_count += 1
+            print(
+                f"\n  ⚠️  COLLAPSE DETECTED (revert #{revert_count})  ⚠️\n"
+                f"    Trigger: entropy={entropy:.4f} | KL={kl:.4f} | "
+                f"score={mean_score:+.4f}\n"
+                f"    Purging VRAM and reloading stable checkpoint..."
+            )
+
+            # 1. Purge corrupted gradient state
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            # 2. Reload last known good weights
+            success = ppo.load_stable_state(stable_path)
+            if not success:
+                print("    ❌ Failed to load stable state, continuing...")
+            else:
+                # 3. Bump hyperparams to force re-exploration
+                old_ec = cfg.entropy_coef
+                old_temp = cfg.temperature
+                old_lr = cfg.lr
+                cfg.entropy_coef = min(cfg.entropy_coef * 1.5, 0.20)
+                cfg.temperature = min(cfg.temperature + 0.1, 0.9)
+                cfg.lr = cfg.lr * 0.7
+                ppo.cfg = cfg
+
+                # 4. Rebuild optimizer with new LR
+                ppo.rebuild_optimizer()
+
+                print(
+                    f"    ✅ Reverted successfully.\n"
+                    f"    entropy_coef: {old_ec:.4f} → {cfg.entropy_coef:.4f}\n"
+                    f"    temperature:  {old_temp:.2f} → {cfg.temperature:.2f}\n"
+                    f"    lr:           {old_lr:.2e} → {cfg.lr:.2e}\n"
+                )
+
+            # Reset streaks
+            low_entropy_streak = 0
+            low_score_streak = 0
+
+            # Log revert event to WandB
+            if not cfg.dry_run:
+                import wandb
+                wandb.log({
+                    "revert/count": revert_count,
+                    "revert/entropy_coef": cfg.entropy_coef,
+                    "revert/temperature": cfg.temperature,
+                    "revert/lr": cfg.lr,
+                    "revert/trigger_entropy": entropy,
+                    "revert/trigger_kl": kl,
+                    "revert/trigger_score": mean_score,
+                })
+
+            # Skip checkpointing this iteration — weights are reverted
+            del all_steps
+            gc.collect()
+            torch.cuda.empty_cache()
+            continue
 
         # ── WandB ──
         if not cfg.dry_run:
@@ -679,6 +816,9 @@ def train(cfg: PPOConfig) -> None:
                 "os/meta_injections": total_mi,
                 "perf/iter_seconds": elapsed,
                 "perf/vram_gb": torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
+                "stability/entropy_coef": cfg.entropy_coef,
+                "stability/temperature": cfg.temperature,
+                "stability/revert_count": revert_count,
             })
 
         # ── Checkpoint ──

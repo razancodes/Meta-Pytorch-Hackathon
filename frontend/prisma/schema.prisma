@@ -1,0 +1,80 @@
+// Memex OS-Agent — Prisma Schema for DPO Continuous Learning
+//
+// This schema captures user preference pairs from the dashboard.
+// Each pair represents a rejected (bad) and chosen (good) agent response
+// to the same prompt, used for offline DPO finetuning.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Core Models
+// ═══════════════════════════════════════════════════════════════════
+
+/// A human preference pair for DPO training.
+/// Stores the original context, the agent's bad output, and the human correction.
+model PreferencePair {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── Context ──
+  /// The full prompt that was sent to the agent (system + user message).
+  originalPrompt String
+
+  /// The scenario difficulty when this interaction occurred.
+  difficulty String @default("medium")
+
+  /// The AML typology (structuring, layering, trade_based_ml).
+  typology String @default("structuring")
+
+  // ── Preference Pair ──
+  /// The agent's original (bad) JSON response — the "rejected" response.
+  rejectedResponse String
+
+  /// The human-corrected JSON response — the "chosen" response.
+  chosenResponse String
+
+  // ── Metadata ──
+  /// Human-readable reason for the correction.
+  correctionReason String?
+
+  /// Whether this pair has been consumed by a DPO training run.
+  consumed Boolean @default(false)
+
+  /// The DPO training run that consumed this pair (null if not yet used).
+  consumedByRunId String?
+
+  /// Timestamp when this pair was consumed for training.
+  consumedAt DateTime?
+
+  @@index([consumed])
+  @@index([createdAt])
+}
+
+/// Tracks DPO training runs for audit and reproducibility.
+model DPOTrainingRun {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  /// Number of preference pairs used in this run.
+  pairsUsed Int
+
+  /// Final DPO loss value.
+  finalLoss Float?
+
+  /// Path to the updated LoRA adapter checkpoint.
+  checkpointPath String?
+
+  /// Whether the adapters were successfully hot-swapped into production.
+  hotSwapped Boolean @default(false)
+
+  /// Additional metadata (JSON serialized).
+  metadata String?
+}
