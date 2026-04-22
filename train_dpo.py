@@ -84,6 +84,7 @@ def fetch_pending_pairs(db_path: str, limit: int = 500) -> List[PreferencePair]:
         return []
 
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")  # Prevent 'database is locked' under concurrency
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
@@ -119,6 +120,7 @@ def mark_pairs_consumed(db_path: str, pair_ids: List[str], run_id: str) -> int:
     if not pair_ids:
         return 0
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     placeholders = ",".join("?" for _ in pair_ids)
     conn.execute(
         f"""
@@ -140,6 +142,7 @@ def record_training_run(
 ) -> None:
     """Record this DPO training run in the database for audit."""
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute(
         """
         INSERT INTO DPOTrainingRun (id, createdAt, pairsUsed, finalLoss, checkpointPath, hotSwapped)
@@ -300,6 +303,7 @@ def train(cfg: DPOConfig) -> None:
 
     model.train()
     final_loss = 0.0
+    max_grad_norm = 1.0  # Prevent gradient explosions from adversarial pairs
 
     for epoch in range(cfg.epochs):
         epoch_loss = 0.0
@@ -313,6 +317,10 @@ def train(cfg: DPOConfig) -> None:
             )
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad],
+                max_grad_norm,
+            )
             optimizer.step()
             optimizer.zero_grad()
 

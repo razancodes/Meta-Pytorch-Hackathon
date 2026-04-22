@@ -571,12 +571,19 @@ class MemexPPO:
             self._reward_ema = hp.get("reward_ema", 0.0)
         return True
 
-    def rebuild_optimizer(self) -> None:
-        """Recreate optimizer + scheduler with current config (after revert)."""
+    def rebuild_optimizer(self, remaining_iters: int = 0) -> None:
+        """Recreate optimizer + scheduler with current config (after revert).
+
+        Args:
+            remaining_iters: Number of iterations left in training.
+                If 0, uses full total_iterations (safe default, slightly
+                wrong cosine shape but won't crash).
+        """
+        t_max = remaining_iters if remaining_iters > 0 else self.cfg.total_iterations
         trainable = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(trainable, lr=self.cfg.lr)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=self.cfg.total_iterations,
+            self.optimizer, T_max=t_max,
             eta_min=self.cfg.lr * 0.1,
         )
 
@@ -770,8 +777,8 @@ def train(cfg: PPOConfig) -> None:
                 cfg.lr = cfg.lr * 0.7
                 ppo.cfg = cfg
 
-                # 4. Rebuild optimizer with new LR
-                ppo.rebuild_optimizer()
+                # 4. Rebuild optimizer with new LR and correct remaining schedule
+                ppo.rebuild_optimizer(remaining_iters=iters - it)
 
                 print(
                     f"    ✅ Reverted successfully.\n"
@@ -798,7 +805,7 @@ def train(cfg: PPOConfig) -> None:
                 })
 
             # Skip checkpointing this iteration — weights are reverted
-            del all_steps
+            del all_steps, ep_stats
             gc.collect()
             torch.cuda.empty_cache()
             continue

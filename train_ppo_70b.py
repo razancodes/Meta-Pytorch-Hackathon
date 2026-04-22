@@ -653,22 +653,37 @@ class MemexPPO70B:
     # ── Stable Checkpoint (Auto-Revert) ─────────────────────────────────
 
     def save_stable_state(self, path: str) -> None:
-        """Save LoRA weights as 'last known good' (rank 0 only for I/O)."""
-        if not is_main_process():
-            return
-        os.makedirs(path, exist_ok=True)
+        """Save LoRA weights as 'last known good'.
+
+        CRITICAL: On ZeRO-3, parameters are sharded across ranks.
+        We must use GatheredParameters to materialize full tensors
+        before saving, otherwise rank 0 saves its own 1/N shard.
+        """
         base = self.engine.module if self.engine else self.model
-        lora_state = {
-            k: v.cpu().clone()
-            for k, v in base.named_parameters() if v.requires_grad
-        }
-        torch.save(lora_state, os.path.join(path, "lora_state.pt"))
-        torch.save({
-            "entropy_coef": self.cfg.entropy_coef,
-            "temperature": self.cfg.temperature,
-            "lr": self.cfg.lr,
-            "reward_ema": self._reward_ema,
-        }, os.path.join(path, "hyperparams.pt"))
+        trainable = [p for p in base.parameters() if p.requires_grad]
+
+        # GatheredParameters materializes full tensors from ZeRO-3 shards
+        # on all ranks. Only rank 0 does I/O.
+        gather_ctx = (
+            deepspeed.zero.GatheredParameters(trainable, modifier_rank=0)
+            if self.engine and hasattr(deepspeed.zero, 'GatheredParameters')
+            else torch.no_grad()  # no-op context for non-ZeRO
+        )
+        with gather_ctx:
+            if not is_main_process():
+                return
+            os.makedirs(path, exist_ok=True)
+            lora_state = {
+                k: v.cpu().clone()
+                for k, v in base.named_parameters() if v.requires_grad
+            }
+            torch.save(lora_state, os.path.join(path, "lora_state.pt"))
+            torch.save({
+                "entropy_coef": self.cfg.entropy_coef,
+                "temperature": self.cfg.temperature,
+                "lr": self.cfg.lr,
+                "reward_ema": self._reward_ema,
+            }, os.path.join(path, "hyperparams.pt"))
 
     def load_stable_state(self, path: str) -> bool:
         """Reload LoRA weights from stable checkpoint across all ranks."""
@@ -950,8 +965,11 @@ def train(cfg: PPOConfig70B) -> None:
                 cfg.lr = cfg.lr * 0.7
                 ppo.cfg = cfg
 
-                # Note: DeepSpeed manages the optimizer internally.
-                # The LR change takes effect via the scheduler step.
+                # DeepSpeed manages the optimizer internally —
+                # we must explicitly set the LR in its param groups.
+                if ppo.engine and ppo.engine.optimizer:
+                    for pg in ppo.engine.optimizer.param_groups:
+                        pg['lr'] = cfg.lr
 
                 log(
                     f"    ✅ Reverted successfully.\n"
@@ -975,7 +993,7 @@ def train(cfg: PPOConfig70B) -> None:
                     "revert/trigger_score": mean_score,
                 })
 
-            del all_steps
+            del all_steps, ep_stats
             gc.collect()
             torch.cuda.empty_cache()
             continue

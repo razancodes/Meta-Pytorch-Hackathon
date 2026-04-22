@@ -96,7 +96,7 @@ wandb.login()
     --lr 5e-6 \
     --lora-r 16 \
     --episodes 4 \
-    --iterations 50 \
+    --iterations 15 \
     --temperature 0.5 \
     --wandb-project memex-ppo
 ```
