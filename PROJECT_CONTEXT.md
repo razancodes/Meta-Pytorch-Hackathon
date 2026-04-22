@@ -139,10 +139,14 @@ Rather than batching entire episodes (which would require storing all token sequ
 The training loop includes production-grade safety features to prevent policy collapse:
 
 - **Mean per-token KL:** Log-probabilities use `.mean()` (not `.sum()`), making the KL divergence penalty scale-invariant regardless of response length. This is critical — `.sum()` causes KL to explode proportionally to token count, dwarfing environmental rewards and causing learned helplessness.
-- **Entropy bonus:** A `- entropy_coef × H(π)` term in the PPO loss prevents the policy from collapsing to a single deterministic action.
+- **Entropy bonus:** A `- entropy_coef × H(π)` term in the PPO loss prevents the policy from collapsing to a single deterministic action. Set to 0.05 (5x stronger than initial value) after observing entropy death within 4 iterations.
 - **Ratio clamping:** `log_ratio` is clamped to `[-10, 10]` before `exp()` to prevent inf/NaN from policy drift between PPO epochs.
 - **Return clipping:** Discounted returns are clipped to `[-2.0, +2.0]` to bound gradient signals from outlier episodes.
 - **Empty response guard:** If the model generates 0 tokens, a dummy EOS token is substituted to prevent NaN from `.mean()` on an empty tensor.
+- **Fault-tolerant `env.step()`:** Each environment step is wrapped in try/except. Malformed actions that crash the handler receive a -0.10 penalty instead of terminating the entire episode.
+- **Degenerate response detection:** If a model response has >80% repeated tokens (e.g., "Search search search..."), the episode is terminated early with a -0.15 penalty.
+- **KL early stopping:** If mean KL exceeds ±15 during a PPO epoch, remaining epochs are skipped to prevent catastrophic gradient updates.
+- **Type-safe `parse_action()`:** All JSON parsing forces `params` to dict type, catches `TypeError`/`ValueError`, and never crashes regardless of model output.
 
 ---
 

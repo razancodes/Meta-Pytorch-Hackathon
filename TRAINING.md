@@ -193,6 +193,10 @@ Both trainers include **10 production-grade safety features** to prevent policy 
 | **Entropy bonus** | `- entropy_coef × H(π)` in loss | Keeps the policy exploring; prevents collapsing to a single degenerate action |
 | **Return clipping** | `clip(returns, -2.0, +2.0)` | Bounds gradient signals from outlier terminal rewards |
 | **Empty response guard** | Dummy EOS if model generates 0 tokens | Prevents NaN from `.mean()` on an empty tensor |
+| **Degenerate response detection** | If >80% repeated tokens, assign -0.15 penalty | Detects and penalizes gibberish output ("Search search search...") |
+| **Fault-tolerant env.step()** | try/except around environment step, -0.10 penalty | Malformed actions no longer crash the training loop |
+| **Type-safe parse_action()** | Force `params` to dict, catch TypeError/ValueError | Prevents `'str' object has no attribute 'get'` crashes |
+| **KL early stopping** | Break PPO epochs if \|KL\| > 15 | Prevents catastrophic gradient updates when policy drifts too far |
 
 ### Hyperparameters
 
@@ -200,7 +204,7 @@ Both trainers include **10 production-grade safety features** to prevent policy 
 |-----------|---------|------------|----------|
 | `lr` | `5e-6` | `2e-6` | Lower LR for 70B parametric stability |
 | `kl_coef` | `0.05` | `0.03` | KL penalty weight against frozen base |
-| `entropy_coef` | `0.01` | `0.01` | Exploration bonus |
+| `entropy_coef` | `0.05` | `0.05` | Exploration bonus |
 | `clip_eps` | `0.2` | `0.2` | Standard PPO clipping |
 | `reward_clip` | `2.0` | `2.0` | Return clipping bound |
 | `grad_accum_steps` | `4` | `8` | Effective batch size |

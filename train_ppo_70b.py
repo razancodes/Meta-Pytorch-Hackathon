@@ -114,7 +114,7 @@ class PPOConfig70B:
     ppo_epochs: int = 4
     clip_eps: float = 0.2
     kl_coef: float = 0.03           # lower KL for larger model
-    entropy_coef: float = 0.01      # entropy bonus (prevents mode collapse)
+    entropy_coef: float = 0.05      # entropy bonus (prevents mode collapse)
     gamma: float = 0.99
     reward_clip: float = 2.0        # clip returns to [-clip, +clip]
     max_grad_norm: float = 0.5       # tighter clipping for 70B
@@ -122,7 +122,7 @@ class PPOConfig70B:
 
     # ── Generation ──
     max_new_tokens: int = 256
-    temperature: float = 0.2         # tighter for more deterministic JSON
+    temperature: float = 0.5         # moderate for RL exploration
     top_p: float = 0.9
     repetition_penalty: float = 1.1
 
@@ -250,19 +250,32 @@ def format_prompt(
 
 
 def parse_action(text: str) -> Tuple[str, Dict[str, Any]]:
-    """Robust JSON tool-call parser with multi-tier fallback."""
+    """Robust JSON tool-call parser with multi-tier fallback.
+
+    Always returns (tool_name: str, params: dict). Never crashes.
+    """
     text = re.sub(r"```(?:json)?\s*", "", text.strip()).strip("` \n")
     try:
         d = json.loads(text)
-        return d.get("tool", "review_alert"), d.get("parameters", {})
-    except json.JSONDecodeError:
+        if isinstance(d, dict):
+            tool = str(d.get("tool", "review_alert"))
+            params = d.get("parameters", {})
+            if not isinstance(params, dict):
+                params = {}
+            return tool, params
+    except (json.JSONDecodeError, TypeError, ValueError):
         pass
     m = re.search(r'\{[^{}]*"tool"\s*:\s*"([^"]+)"[^{}]*\}', text, re.DOTALL)
     if m:
         try:
             d = json.loads(m.group(0))
-            return d.get("tool", "review_alert"), d.get("parameters", {})
-        except json.JSONDecodeError:
+            if isinstance(d, dict):
+                tool = str(d.get("tool", "review_alert"))
+                params = d.get("parameters", {})
+                if not isinstance(params, dict):
+                    params = {}
+                return tool, params
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
     tm = re.search(r'"tool"\s*:\s*"([^"]+)"', text)
     return (tm.group(1) if tm else "review_alert"), {}
@@ -425,12 +438,36 @@ class MemexPPO70B:
                 prompt = format_prompt(obs, step_num, kernel, disk, ram)
                 resp_text, q_ids, r_ids = self.generate(prompt)
 
+                # Degenerate response detection: >80% repeated tokens = gibberish
+                if len(r_ids) > 4:
+                    unique_ratio = len(set(r_ids.tolist())) / len(r_ids)
+                    if unique_ratio < 0.20:
+                        steps_data.append({
+                            "q_ids": q_ids, "r_ids": r_ids,
+                            "reward": -0.15, "old_lp": self._compute_log_prob(q_ids, r_ids, with_grad=False).item(),
+                            "ref_lp": self._compute_ref_log_prob(q_ids, r_ids),
+                            "resp_text": resp_text,
+                        })
+                        break  # End episode — degenerate model output
+
                 old_lp = self._compute_log_prob(q_ids, r_ids, with_grad=False).item()
                 ref_lp = self._compute_ref_log_prob(q_ids, r_ids)
 
+                # Parse and step environment (fault-tolerant)
                 tool, params = parse_action(resp_text)
-                obs = env.step(AMLAction(tool=tool, parameters=params))
-                reward = obs.reward if obs.reward is not None else 0.0
+                try:
+                    obs = env.step(AMLAction(tool=tool, parameters=params))
+                    reward = obs.reward if obs.reward is not None else 0.0
+                except Exception as e:
+                    reward = -0.10
+                    obs = AMLObservation(
+                        tool_result={"error": f"Invalid action: {str(e)[:100]}"},
+                        available_tools=[],
+                        message=f"Action failed: {str(e)[:100]}. Produce valid JSON.",
+                        done=True,
+                        reward=reward,
+                        metadata={"step": step_num, "error": "malformed_action"},
+                    )
 
                 steps_data.append({
                     "q_ids": q_ids, "r_ids": r_ids,
@@ -517,6 +554,8 @@ class MemexPPO70B:
 
         for epoch in range(self.cfg.ppo_epochs):
             random.shuffle(all_steps)
+            epoch_kl = 0.0
+            epoch_steps = 0
 
             for i, step in enumerate(all_steps):
                 try:
@@ -564,6 +603,8 @@ class MemexPPO70B:
                     total_kl += kl.item()
                     total_entropy += entropy.item()
                     n_updates += 1
+                    epoch_kl += kl.item()
+                    epoch_steps += 1
 
                 except RuntimeError as e:
                     if "out of memory" in str(e).lower():
@@ -572,6 +613,12 @@ class MemexPPO70B:
                         gc.collect()
                     else:
                         raise
+
+            # KL early stopping: if mean KL too large, remaining epochs are wasted
+            if epoch_steps > 0:
+                mean_epoch_kl = abs(epoch_kl / epoch_steps)
+                if mean_epoch_kl > 15.0:
+                    break  # policy drifted too far, stop PPO epochs
 
         n = max(n_updates, 1)
         return {
