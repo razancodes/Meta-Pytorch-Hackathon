@@ -1,8 +1,8 @@
 ---
 title: Memex AML Investigation Environment
 emoji: 🧠
-colorFrom: purple
-colorTo: blue
+colorFrom: gray
+colorTo: indigo
 sdk: docker
 app_port: 7860
 ---
@@ -182,7 +182,7 @@ python demo_eval.py --model checkpoints/best
 
 ## Tool Roster (15 Tools)
 
-| Domain Tools (9) | OS-Mechanic Tools (6) |
+| Domain Tools (10) | OS-Mechanic Tools (5) |
 |:---|:---|
 | `review_alert` — Alert details | `write_to_case_file` — Page to disk (+0.10, cap 3) |
 | `get_customer_profile` — KYC data | `request_wire_trace` — Async job (2-4 step ETA) |
@@ -218,9 +218,11 @@ python demo_eval.py --model checkpoints/best
 |-----------|--------|--------|
 | Decision | 0.30 | Exact match: file_sar vs close_alert |
 | Typology | 0.15 | Exact match: structuring/layering/TBML |
-| Findings | 0.25 | Keyword overlap with semantic aliases |
+| Findings | 0.20 | Keyword overlap with semantic aliases |
 | Entities | 0.15 | Precision/Recall F1 |
-| Efficiency | 0.15 | Steps used vs optimal path |
+| UBO ID | 0.05 | Exact match: beneficial owner ID |
+| Pillar | 0.05 | Phase 3 checks coverage |
+| Efficiency | 0.10 | Steps used vs optimal path |
 
 ---
 
@@ -286,7 +288,8 @@ docker build -t memex .
 docker run -p 7860:7860 memex
 
 # HF Spaces (one command)
-openenv push --exclude .hfignore
+openenv push --ignore-file .hfignore
+# (.hfignore excludes frontend/, venv/ etc. Reduces upload from 558MB to ~5MB)
 # → https://huggingface.co/spaces/MuazTPM/aml_investigation_env
 
 # OpenEnv CLI

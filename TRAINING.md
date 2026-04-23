@@ -96,7 +96,7 @@ wandb.login()
     --lr 5e-6 \
     --lora-r 16 \
     --episodes 4 \
-    --iterations 15 \
+    --iterations 50 \
     --temperature 0.5 \
     --use-plr \
     --wandb-project memex-ppo
@@ -238,10 +238,10 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 
 ### Hyperparameters
 
-| Parameter | L4 (8B) | A100 (70B) | Purpose |
-|-----------|---------|------------|----------|
-| `lr` | `5e-6` | `2e-6` | Lower LR for 70B parametric stability |
-| `kl_coef` | `0.05` | `0.03` | KL penalty weight against frozen base |
+| Parameter | L4 (PPO) | L4 (GRPO) | A100 (70B) | Purpose |
+|-----------|----------|-----------|------------|----------|
+| `lr` | `5e-6` | `2e-4` | `2e-6` | Higher LR for GRPO (critic-free); lower for 70B |
+| `kl_coef` | `0.05` | `0.05` | `0.03` | KL penalty weight against frozen base |
 | `entropy_coef` | `0.05` | `0.05` | Exploration bonus |
 | `clip_eps` | `0.2` | `0.2` | Standard PPO clipping |
 | `reward_clip` | `2.0` | `2.0` | Return clipping bound |

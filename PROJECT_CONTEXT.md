@@ -20,9 +20,9 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | **Models** | `models.py` | Single source of truth for all Pydantic types: `AMLAction`, `AMLObservation`, `AMLState`, `AsyncJobInfo`, `AGUIState` |
 | **State Manager** | `state_manager.py` | OS mechanics engine: RAM eviction (2-slot context), Disk persistence, Async Job Queue, Kernel Directives |
 | **Procedural Generator** | `scenarios/procedural_generator.py` | Dynamic POMDP scenario builder: 3 typologies × 3 difficulties, unique IDs per episode |
-| **Adversary Agent** | `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator (mule rings, pass-throughs, phantom invoices) |
-| **Battle Orchestrator** | `train_adversary.py` | GAN-style adversarial loop that tests the Defender and saves evasive graphs to SQLite |
-| **Adversarial DB** | `adversarial_successes.db` | SQLite database storing failed scenarios (negative examples) |
+| **Adversary Agent** | `scenarios/adversary_agent.py` | ★ NEW (2026-04-23) LLM-backed evasive scenario generator (mule rings, pass-throughs, phantom invoices) |
+| **Battle Orchestrator** | `train_adversary.py` | ★ NEW (2026-04-23) GAN-style adversarial loop that tests the Defender and saves evasive graphs to SQLite |
+| **Adversarial DB** | `adversarial_successes.db` | ★ NEW (2026-04-23) SQLite database storing failed scenarios (negative examples) |
 | **Compliance Manual** | `scenarios/compliance_manual.py` | Searchable AML rule corpus for kernel updates |
 | **Environment** | `server/aml_environment.py` | Core environment: 15 tool handlers + State Manager integration |
 | **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + terminal composite score [-1.0, +1.0] |
@@ -59,9 +59,9 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 ### Tool Roster (15 total)
 
-**Domain (9):** review_alert, get_customer_profile, query_transactions, check_watchlist, trace_network, check_source_of_funds, check_market_price, assess_risk, file_sar, close_alert
+**Domain (10):** review_alert, get_customer_profile, query_transactions, check_watchlist, trace_network, check_source_of_funds, check_market_price, assess_risk, file_sar, close_alert
 
-**OS-Mechanic (6):** write_to_case_file, request_wire_trace, retrieve_async_result, search_compliance_manual, update_system_prompt
+**OS-Mechanic (5):** write_to_case_file, request_wire_trace, retrieve_async_result, search_compliance_manual, update_system_prompt
 
 ### Reward System
 
@@ -101,17 +101,17 @@ The backend is invisible by design — an LLM managing RAM eviction and async qu
 
 ```
 ┌─────────────────────────────────────┬─────────────────────────────────┐
-│        ENTITY GRAPH                 │   SYSTEM RESOURCES (Panel 1)    │
+│        ENTITY GRAPH (Panel 1)       │   SYSTEM RESOURCES (Panel 3)    │
 │        (60% Width)                  │    - RAM & Disk Storage         │
 │                                     │    - Active Async Processes     │
 │  [3D Globe / Flat Map Toggle]       │    - Kernel Directives          │
 │  react-globe.gl vectors             ├─────────────────────────────────┤
-│  Cytoscape.js Cola Physics          │   AGENT TERMINAL (Panel 2)      │
+│  Cytoscape.js Cola Physics          │   AGENT TERMINAL (Panel 4)      │
 │                                     │    - ReAct scratchpad reasoning │
 │  (Smooth Incremental Updates)       │    - Tool execution logs        │
 │                                     ├─────────────────────────────────┤
-│                                     │ CURRICULUM ENGINE (Panel 3, opt)│
-│                                     │    - PLR Regret Metrics         │
+│   *GLOBAL THREAT MAP (Panel 2)      │ CURRICULUM ENGINE (Panel 5, opt)│
+│    is toggled with Entity Graph     │    - PLR Regret Metrics         │
 │                                     │    - Scenario Difficulty Gauge  │
 └─────────────────────────────────────┴─────────────────────────────────┘
 ```
@@ -124,9 +124,9 @@ The frontend renders a **5th panel** (`CurriculumPanel.tsx`) below the terminal 
 
 ---
 
-## T4 Training Pipeline & VRAM Optimization
+## L4 Training Pipeline & VRAM Optimization
 
-Training an 8B-parameter language model on consumer GPU hardware (NVIDIA T4, ~15GB VRAM) demands aggressive memory engineering. Our `train_ppo.py` implements a custom step-level PPO loop with three architectural decisions that make this possible:
+Training an 8B-parameter language model on consumer GPU hardware (NVIDIA L4, ~24GB VRAM) demands aggressive memory engineering. Our `train_ppo.py` implements a custom step-level PPO loop with three architectural decisions that make this possible:
 
 ### 1. Unsloth 4-bit Quantization + LoRA
 
@@ -134,15 +134,15 @@ The base model (Meta-Llama-3.1-8B-Instruct) is loaded via Unsloth's `FastLanguag
 
 ### 2. The `disable_adapter()` Trick
 
-Standard PPO requires a frozen reference model to compute the KL divergence penalty. Naively, this means loading two copies of the model (~10GB each) — impossible on a T4.
+Standard PPO requires a frozen reference model to compute the KL divergence penalty. Naively, this means loading two copies of the model (~10GB each) — impossible on an L4.
 
 Our solution: **one model, two modes.** During the forward pass, we call `model.disable_adapter()` to temporarily bypass the LoRA layers, producing reference logits from the frozen base weights. Then `model.enable_adapter()` restores the trainable policy. This yields an exact KL penalty with zero additional VRAM overhead.
 
 ### 3. Step-Level Processing
 
-Rather than batching entire episodes (which would require storing all token sequences simultaneously), we process **one environment step at a time**. Each step: tokenize → forward → compute log-prob → accumulate into a trajectory buffer. Gradients are accumulated over 4 steps before a single optimizer update. Peak VRAM: **~10GB / 15GB** — comfortable headroom for the T4's memory.
+Rather than batching entire episodes (which would require storing all token sequences simultaneously), we process **one environment step at a time**. Each step: tokenize → forward → compute log-prob → accumulate into a trajectory buffer. Gradients are accumulated over 4 steps before a single optimizer update. Peak VRAM: **~10GB / 15GB** — comfortable headroom for the L4's memory.
 
-**Colab/Kaggle deployment:** `TRAINING.md` provides 6 copy-paste cells: install stack → upload project → dry-run → train → evaluate → demo. Training 50 iterations on a T4 takes ~2.5 hours.
+**Colab/Kaggle deployment:** `TRAINING.md` provides 6 copy-paste cells: install stack → upload project → dry-run → train → evaluate → demo. Training 50 iterations on an L4 takes ~2.5 hours.
 
 ### 4. PPO Stability Engineering
 
@@ -200,7 +200,7 @@ Both modes capture AGUI state for frontend replay, giving judges a cinematic wal
 
 ## 70B Distributed Training Pipeline (A100 Cluster)
 
-The scaling pivot from 8B/T4 to 70B/multi-A100 is implemented in `train_ppo_70b.py`.
+The scaling pivot from 8B/L4 to 70B/multi-A100 is implemented in `train_ppo_70b.py`.
 
 ### Why DeepSpeed ZeRO-3?
 
@@ -253,11 +253,11 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 
 ## Deployment
 
-- **HF Spaces:** `openenv push --exclude .hfignore` → deploys to `MuazTPM/aml_investigation_env` (Docker, port 7860)
+- **HF Spaces:** `openenv push --ignore-file .hfignore` → deploys to `MuazTPM/aml_investigation_env` (Docker, port 7860)
 - **OpenEnv CLI:** `openenv serve` → reads `openenv.yaml` → `openenv_server:app`
 - **Local:** `uvicorn openenv_server:app --host 0.0.0.0 --port 8000`
 - **Docker:** `docker build -t memex . && docker run -p 7860:7860 memex`
-- **Smoke Tests:** `python tests/test_smoke.py` → 7/7 tests
+- **Smoke Tests:** `python tests/test_smoke.py` → 8/8 tests
 
 ---
 
@@ -285,6 +285,6 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 
 1. **Codebase sanitization:** Removed duplicate type definitions from `app.py`, updated `client.py` with all 15 tools, rewrote README to reflect Memex OS-Agent architecture
 2. **Git consolidation:** Resolved stuck rebase, recovered all OS-mechanic features to `main`
-3. **PPO trainer:** Custom step-level PPO with Unsloth 4-bit + LoRA, T4-optimized (peak ~10GB VRAM)
+3. **PPO trainer:** Custom step-level PPO with Unsloth 4-bit + LoRA, L4-optimized (peak ~10GB VRAM)
 4. **70B scaling pivot:** `train_ppo_70b.py` with DeepSpeed ZeRO-3 for multi-node A100 cluster
 5. **Demo system:** 1MDB-inspired scenario with AGUI replay capture for frontend visualization
