@@ -56,6 +56,10 @@ AVAILABLE_TOOLS: List[str] = [
     "assess_risk",
     "file_sar",
     "close_alert",
+    # Phase 3: FinCEN investigation tools
+    "check_device_overlap",
+    "verify_customs_invoice",
+    "query_beneficial_ownership",
     # OS-Mechanic tools
     "write_to_case_file",
     "request_wire_trace",
@@ -210,6 +214,10 @@ class AMLEnvironment(Environment):
             "assess_risk": self._handle_assess_risk,
             "file_sar": self._handle_file_sar,
             "close_alert": self._handle_close_alert,
+            # Phase 3: FinCEN tools
+            "check_device_overlap": self._handle_check_device_overlap,
+            "verify_customs_invoice": self._handle_verify_customs_invoice,
+            "query_beneficial_ownership": self._handle_query_beneficial_ownership,
             # OS-Mechanic tools
             "write_to_case_file": self._handle_write_to_case_file,
             "request_wire_trace": self._handle_request_wire_trace,
@@ -539,16 +547,29 @@ class AMLEnvironment(Environment):
         return result, message, False, {}
 
     def _handle_file_sar(self, params: Dict[str, Any]) -> Tuple[Dict, str, bool, Dict]:
-        """Terminal action — file a SAR and compute the final score."""
+        """Terminal action — file a SAR and compute the final score.
+
+        Phase 3: Accepts expanded FinCEN SAR payload with primary_subjects,
+        red_flags_identified, evidence_chain, and ubo_identified.
+        """
         self._state.decision_made = True
-        findings = params.get("findings", [])
-        typology = params.get("typology", "")
-        entities_involved = params.get("entities_involved", params.get("entities", []))
+
+        # Legacy fields (backward compatible)
+        findings = params.get("findings", params.get("red_flags_identified", []))
+        typology = params.get("typology", params.get("detected_typology", ""))
+        entities_involved = params.get(
+            "entities_involved",
+            params.get("primary_subjects", params.get("entities", [])),
+        )
 
         if isinstance(findings, str):
             findings = [findings]
         if isinstance(entities_involved, str):
             entities_involved = [entities_involved]
+
+        # Phase 3 enrichment fields
+        evidence_chain = params.get("evidence_chain", "")
+        ubo_identified = params.get("ubo_identified", None)
 
         self._state.findings.extend(findings)
 
@@ -559,6 +580,7 @@ class AMLEnvironment(Environment):
             entities_flagged=entities_involved,
             typology=typology,
             state=self._state,
+            ubo_identified=ubo_identified,
         )
         self._state.accumulated_reward = final_score
 
@@ -567,6 +589,8 @@ class AMLEnvironment(Environment):
             "typology": typology,
             "entities_flagged": entities_involved,
             "findings_submitted": findings,
+            "evidence_chain": evidence_chain[:500] if evidence_chain else None,
+            "ubo_identified": ubo_identified,
             "final_score": final_score,
             "grader_breakdown": self._build_grader_breakdown(
                 "file_sar", findings, entities_involved, typology, final_score
@@ -815,6 +839,166 @@ class AMLEnvironment(Environment):
         else:
             result = {"commodity": commodity, "market_price": price_data}
             message = f"Market price for '{commodity}': {price_data}."
+        return result, message, False, {}
+
+    # ================================================================== #
+    # PHASE 3: FinCEN INVESTIGATION TOOLS                                  #
+    # ================================================================== #
+
+    def _handle_check_device_overlap(self, params: Dict[str, Any]) -> Tuple[Dict, str, bool, Dict]:
+        """Check for device/IP overlap across entities — mule ring detection."""
+        entity_id = params.get("entity_id", "")
+        self._state.device_overlap_checked = True
+
+        fp_data = self._current_scenario.device_fingerprints
+        if not fp_data:
+            return (
+                {"entity_id": entity_id, "overlap": False, "note": "No device data available."},
+                "No device fingerprint data available for this scenario.",
+                False, {},
+            )
+
+        target_fps = fp_data.get(entity_id, [])
+        if not target_fps:
+            return (
+                {"entity_id": entity_id, "overlap": False, "note": f"No device data for '{entity_id}'."},
+                f"No device fingerprint records found for entity '{entity_id}'.",
+                False, {},
+            )
+
+        # Collect all devices/IPs for the target entity
+        target_devices = {fp.get("device_id") for fp in target_fps if fp.get("device_id")}
+        target_ips = {fp.get("ip_address") for fp in target_fps if fp.get("ip_address")}
+
+        # Scan all OTHER entities for overlap
+        overlaps = []
+        for other_id, other_fps in fp_data.items():
+            if other_id == entity_id:
+                continue
+            for fp in other_fps:
+                shared_dev = fp.get("device_id") in target_devices if fp.get("device_id") else False
+                shared_ip = fp.get("ip_address") in target_ips if fp.get("ip_address") else False
+                if shared_dev or shared_ip:
+                    overlaps.append({
+                        "entity_id": other_id,
+                        "shared_device_id": fp.get("device_id") if shared_dev else None,
+                        "shared_ip": fp.get("ip_address") if shared_ip else None,
+                        "other_jurisdiction": fp.get("jurisdiction", "unknown"),
+                    })
+
+        result = {
+            "entity_id": entity_id,
+            "device_fingerprints": target_fps,
+            "overlap": len(overlaps) > 0,
+            "overlapping_entities": overlaps,
+            "risk_assessment": "HIGH — Shared device/IP indicates potential mule ring" if overlaps else "LOW — No device overlap detected",
+        }
+        if overlaps:
+            message = f"⚠ DEVICE OVERLAP: Entity '{entity_id}' shares device/IP with {len(overlaps)} other entit(ies). Possible mule ring."
+        else:
+            message = f"No device overlap detected for entity '{entity_id}'."
+        return result, message, False, {}
+
+    def _handle_verify_customs_invoice(self, params: Dict[str, Any]) -> Tuple[Dict, str, bool, Dict]:
+        """Verify a customs invoice against market data — phantom shipment detection."""
+        invoice_id = params.get("invoice_id", "")
+        self._state.customs_invoice_verified = True
+
+        invoices = self._current_scenario.customs_invoices
+        if not invoices:
+            return (
+                {"invoice_id": invoice_id, "verified": False, "note": "No customs invoice data available."},
+                "No customs invoice data available for this scenario.",
+                False, {},
+            )
+
+        invoice = invoices.get(invoice_id)
+        if invoice is None:
+            # Fuzzy match on invoice_id
+            for iid, idata in invoices.items():
+                if invoice_id.lower() in iid.lower() or iid.lower() in invoice_id.lower():
+                    invoice = idata
+                    invoice_id = iid
+                    break
+
+        if invoice is None:
+            return (
+                {"invoice_id": invoice_id, "verified": False, "available_invoices": list(invoices.keys())},
+                f"Invoice '{invoice_id}' not found. Available: {list(invoices.keys())}.",
+                False, {},
+            )
+
+        # Red flag analysis
+        red_flags = []
+        if invoice.get("is_phantom", False):
+            red_flags.append("PHANTOM_SHIPMENT: No bill of lading, zero shipping weight")
+        if invoice.get("shipping_weight_kg", 0) <= 0:
+            red_flags.append("ZERO_WEIGHT: Declared weight is 0 kg")
+        if not invoice.get("bill_of_lading"):
+            red_flags.append("MISSING_BOL: No bill of lading reference")
+
+        # Cross-reference with market data
+        market = self._current_scenario.market_data
+        commodity = invoice.get("commodity_description", "").lower().replace(" ", "_")
+        market_price = None
+        for mk, mv in market.items():
+            if mk.lower() in commodity or commodity in mk.lower():
+                market_price = mv.get("market_unit_price_usd")
+                break
+        if market_price and invoice.get("declared_value_usd", 0) > market_price * 2:
+            premium = round((invoice["declared_value_usd"] / market_price - 1) * 100)
+            red_flags.append(f"OVER_INVOICING: {premium}% above market price")
+
+        result = {
+            "invoice_id": invoice_id,
+            "invoice_data": invoice,
+            "red_flags": red_flags,
+            "risk_level": "HIGH" if red_flags else "LOW",
+        }
+        if red_flags:
+            message = f"⚠ INVOICE RED FLAGS for '{invoice_id}': {', '.join(red_flags)}"
+        else:
+            message = f"Invoice '{invoice_id}' verified — no anomalies detected."
+        return result, message, False, {}
+
+    def _handle_query_beneficial_ownership(self, params: Dict[str, Any]) -> Tuple[Dict, str, bool, Dict]:
+        """Query the beneficial ownership graph for an entity — UBO tracing."""
+        entity_id = params.get("entity_id", "")
+        max_depth = min(params.get("max_depth", 3), 5)  # Cap at 5 hops
+        self._state.beneficial_ownership_queried = True
+
+        bo_data = self._current_scenario.beneficial_ownership
+        if not bo_data:
+            return (
+                {"entity_id": entity_id, "ownership_chain": [], "note": "No ownership data available."},
+                "No beneficial ownership data available for this scenario.",
+                False, {},
+            )
+
+        chain = bo_data.get(entity_id, [])
+        if not chain:
+            return (
+                {"entity_id": entity_id, "ownership_chain": [], "note": f"No ownership records for '{entity_id}'."},
+                f"No beneficial ownership records found for entity '{entity_id}'.",
+                False, {},
+            )
+
+        # Filter to max_depth
+        filtered = [node for node in chain if node.get("hop_count", 0) <= max_depth]
+        ubos = [node for node in filtered if node.get("is_ubo", False)]
+
+        result = {
+            "entity_id": entity_id,
+            "ownership_chain": filtered,
+            "ubo_found": len(ubos) > 0,
+            "ubos": ubos,
+            "max_depth_searched": max_depth,
+        }
+        if ubos:
+            ubo_names = [u.get("entity_name", u.get("entity_id")) for u in ubos]
+            message = f"UBO identified for '{entity_id}': {', '.join(ubo_names)} (depth={max([u.get('hop_count',0) for u in ubos])})"
+        else:
+            message = f"No Ultimate Beneficial Owner identified for '{entity_id}' within {max_depth} hops."
         return result, message, False, {}
 
     # ================================================================== #

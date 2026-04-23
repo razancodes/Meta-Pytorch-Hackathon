@@ -7,6 +7,10 @@ Defines the core data contracts for the environment:
 - AsyncJobInfo: metadata for background (interrupt) tasks
 - AGUIState: frontend visualization payload
 - AMLState: full internal environment state including OS mechanics
+- DeviceFingerprint: device/IP/geo data for mule ring detection
+- CustomsInvoice: trade invoice data for TBML phantom shipment detection
+- BeneficialOwnerNode: ownership graph node for UBO tracing
+- SARPayload: FinCEN-compliant SAR filing data contract
 """
 
 from __future__ import annotations
@@ -26,6 +30,16 @@ class AsyncJobStatus(str, Enum):
     PENDING = "pending"
     READY = "ready"
     RETRIEVED = "retrieved"
+
+
+class SARTypology(str, Enum):
+    """FinCEN-recognized AML typology classifications."""
+    STRUCTURING = "structuring"
+    LAYERING = "layering"
+    TRADE_BASED_ML = "trade_based_ml"
+    PASS_THROUGH = "pass_through"
+    MULE_RING = "mule_ring"
+    FALSE_POSITIVE = "false_positive"
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +135,132 @@ class AGUIState(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Device Fingerprint (Pillar 1: Mule-Ring Detection)
+# ---------------------------------------------------------------------------
+
+class DeviceFingerprint(BaseModel):
+    """Device and geolocation data attached to an entity or transaction."""
+
+    device_id: str = Field(..., description="Unique hardware/session fingerprint")
+    ip_address: str = Field(..., description="IPv4 address observed during session")
+    mac_address: Optional[str] = Field(
+        default=None,
+        description="MAC address (populated for branch terminal devices)",
+    )
+    latitude: float = Field(..., description="Geolocation latitude (WGS-84)")
+    longitude: float = Field(..., description="Geolocation longitude (WGS-84)")
+    jurisdiction: str = Field(..., description="Resolved jurisdiction from IP/geo")
+    session_timestamp: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 timestamp of the session",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Customs Invoice (Pillar 2: Trade-Based ML / Phantom Shipments)
+# ---------------------------------------------------------------------------
+
+class CustomsInvoice(BaseModel):
+    """Trade invoice record for customs/TBML verification."""
+
+    invoice_id: str = Field(..., description="Unique customs invoice ID")
+    transaction_id: str = Field(..., description="Linked transaction ID")
+    hs_code: str = Field(..., description="Harmonized System tariff code (6-digit)")
+    commodity_description: str = Field(..., description="Human-readable goods description")
+    declared_value_usd: float = Field(..., description="Declared customs value in USD")
+    shipping_weight_kg: float = Field(..., description="Declared shipping weight in kg")
+    origin_country: str = Field(..., description="Country of export")
+    destination_country: str = Field(..., description="Country of import")
+    shipper_name: Optional[str] = Field(default=None, description="Exporter/shipper name")
+    consignee_name: Optional[str] = Field(default=None, description="Importer/consignee name")
+    bill_of_lading: Optional[str] = Field(default=None, description="B/L reference number")
+    is_phantom: bool = Field(
+        default=False,
+        description="Ground truth: True if this is a phantom/fraudulent shipment",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Beneficial Ownership Node (Pillar 4: Deep Graph / UBO Tracing)
+# ---------------------------------------------------------------------------
+
+class BeneficialOwnerNode(BaseModel):
+    """Node in the beneficial ownership graph for UBO tracing."""
+
+    entity_id: str = Field(..., description="Entity or person ID")
+    entity_name: str = Field(..., description="Human-readable name")
+    entity_type: str = Field(
+        ..., description="Type: 'individual' | 'company' | 'trust' | 'fund'"
+    )
+    ownership_pct: Optional[float] = Field(
+        default=None,
+        description="Ownership percentage (0-100) in the parent entity",
+    )
+    jurisdiction: str = Field(default="", description="Jurisdiction of incorporation")
+    hop_count: int = Field(
+        default=0,
+        description="Distance from the queried entity (0 = direct, 1 = one hop, etc.)",
+    )
+    is_ubo: bool = Field(
+        default=False,
+        description="True if this entity is the Ultimate Beneficial Owner",
+    )
+    parent_entity_id: Optional[str] = Field(
+        default=None,
+        description="ID of the entity this node owns a stake in (for graph traversal)",
+    )
+    relationship: str = Field(
+        default="",
+        description="Relationship label (e.g., 'director', 'shareholder', 'trustee')",
+    )
+
+
+# ---------------------------------------------------------------------------
+# FinCEN SAR Payload (Step 3: Data Contract)
+# ---------------------------------------------------------------------------
+
+class SARPayload(BaseModel):
+    """FinCEN-compliant Suspicious Activity Report data contract.
+
+    This is the structured payload that file_sar MUST receive.
+    The grader mathematically scores each field against ground truth.
+    """
+
+    primary_subjects: List[str] = Field(
+        ...,
+        min_length=1,
+        description="Array of entity/customer IDs identified as primary subjects of the SAR",
+    )
+    detected_typology: str = Field(
+        ...,
+        description="Detected AML typology (structuring | layering | trade_based_ml | pass_through | mule_ring)",
+    )
+    red_flags_identified: List[str] = Field(
+        ...,
+        min_length=1,
+        description="Array of specific red flag strings identified during investigation",
+    )
+    evidence_chain: str = Field(
+        ...,
+        min_length=10,
+        description="Narrative summary of evidence chain linking subjects to suspicious activity",
+    )
+    # Optional enrichment fields (bonus scoring)
+    ubo_identified: Optional[str] = Field(
+        default=None,
+        description="Ultimate Beneficial Owner ID if traced",
+    )
+    transaction_velocity_summary: Optional[str] = Field(
+        default=None,
+        description="Summary of transaction velocity analysis (e.g., '$500k in 24h')",
+    )
+    geographic_risk_summary: Optional[str] = Field(
+        default=None,
+        description="Summary of geographic/jurisdiction risk analysis",
+    )
+
+
+# ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
 
@@ -148,6 +288,11 @@ class AMLState(BaseModel):
     source_checked: List[str] = Field(default_factory=list)
     risk_assessed: bool = False
     decision_made: bool = False
+
+    # --- Phase 3: FinCEN tracking flags ---
+    device_overlap_checked: bool = False
+    customs_invoice_verified: bool = False
+    beneficial_ownership_queried: bool = False
 
     # Collected evidence
     findings: List[str] = Field(
