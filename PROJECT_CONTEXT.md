@@ -1,7 +1,7 @@
 # Memex: Project Context
 
 > Living document tracking the current state of the Memex OS-Agent Benchmark.
-> Last updated: 2026-04-22
+> Last updated: 2026-04-23
 
 ## What Is Memex?
 
@@ -23,7 +23,8 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | **Compliance Manual** | `scenarios/compliance_manual.py` | Searchable AML rule corpus for kernel updates |
 | **Environment** | `server/aml_environment.py` | Core environment: 15 tool handlers + State Manager integration |
 | **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + terminal composite score [-1.0, +1.0] |
-| **Server** | `server/app.py` | FastAPI HTTP server (dual-mode: OpenEnv / standalone) |
+| **OpenEnv Server** | `openenv_server.py` | Production FastAPI entrypoint — OpenEnv SDK `create_app()` + standalone fallback |
+| **Legacy Server** | `server/app.py` | FastAPI HTTP server (dual-mode: OpenEnv / standalone, used by trainers) |
 | **Client** | `client.py` | HTTP client with all 15 tool wrappers |
 | **Inference** | `inference.py` | ReAct agent loop with OS-mechanic awareness |
 | **PPO Trainer (T4)** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
@@ -245,13 +246,23 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 
 ## Deployment
 
-- **HF Spaces:** Docker-based, auto-deploys via `Dockerfile` in root
-- **Local:** `uvicorn server.app:app --host 0.0.0.0 --port 8000`
-- **Validation:** `bash validate.sh` (3 checks: ping, Docker build, openenv validate)
+- **HF Spaces:** `openenv push --exclude .hfignore` → deploys to `MuazTPM/aml_investigation_env` (Docker, port 7860)
+- **OpenEnv CLI:** `openenv serve` → reads `openenv.yaml` → `openenv_server:app`
+- **Local:** `uvicorn openenv_server:app --host 0.0.0.0 --port 8000`
+- **Docker:** `docker build -t memex . && docker run -p 7860:7860 memex`
+- **Smoke Tests:** `python tests/test_smoke.py` → 7/7 tests
 
 ---
 
 ## Recent Changes
+
+### 2026-04-23
+
+1. **OpenEnv Server (`openenv_server.py`):** Production-grade FastAPI wrapper using OpenEnv SDK `create_app()` with standalone fallback. Boot-time validation, structured logging, HF Spaces ready (port 7860).
+2. **AMLEnvironment fix:** Added `super().__init__()` to `AMLEnvironment.__init__()` for OpenEnv ABC compatibility.
+3. **Dockerfile rewrite:** HF Spaces compliant — non-root user (UID 1000), port 7860, `HEALTHCHECK`, `openenv_server:app` entrypoint.
+4. **`.hfignore`:** Dedicated exclude file for `openenv push` — excludes `frontend/`, `venv/`, binary files. Reduced upload from 558MB to ~5MB.
+5. **HF Space deployed:** `MuazTPM/aml_investigation_env` live at https://huggingface.co/spaces/MuazTPM/aml_investigation_env
 
 ### 2026-04-22
 

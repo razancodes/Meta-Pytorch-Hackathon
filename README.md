@@ -1,10 +1,10 @@
 ---
-title: MetaHack
+title: Memex AML Investigation Environment
 emoji: 🧠
 colorFrom: purple
 colorTo: blue
 sdk: docker
-app_port: 8000
+app_port: 7860
 ---
 
 <div align="center">
@@ -110,12 +110,12 @@ git clone https://github.com/razancodes/Meta-Pytorch-Hackathon.git
 cd Meta-Pytorch-Hackathon
 pip install -r requirements.txt
 
-# Start environment server
-uvicorn server.app:app --host 0.0.0.0 --port 8000
+# Start environment server (OpenEnv SDK auto-detected)
+uvicorn openenv_server:app --host 0.0.0.0 --port 8000
 
 # Verify
 curl http://localhost:8000/health
-# → {"status": "ok", "env": "aml_investigation_env"}
+# → {"status": "healthy"}
 
 # Run smoke tests
 python tests/test_smoke.py
@@ -224,6 +224,7 @@ python demo_eval.py --model checkpoints/best
 
 ```
 .
+├── openenv_server.py            # ★ OpenEnv FastAPI entrypoint (create_app + fallback)
 ├── models.py                    # Pydantic types (single source of truth)
 ├── state_manager.py             # OS mechanics engine
 ├── client.py                    # HTTP client (15 tool wrappers)
@@ -233,8 +234,9 @@ python demo_eval.py --model checkpoints/best
 ├── train_dpo.py                 # DPO continuous learning (offline)
 ├── hotswap.py                   # Zero-downtime LoRA adapter swap
 ├── demo_eval.py                 # 1MDB demo + AGUI replay
-├── Dockerfile                   # HF Spaces deployment
-├── openenv.yaml                 # OpenEnv contract
+├── Dockerfile                   # HF Spaces deployment (port 7860)
+├── openenv.yaml                 # OpenEnv contract → openenv_server:app
+├── .hfignore                    # Exclude patterns for openenv push
 ├── scenarios/
 │   ├── procedural_generator.py  # POMDP graph builder
 │   ├── compliance_manual.py     # Searchable rule corpus
@@ -242,7 +244,7 @@ python demo_eval.py --model checkpoints/best
 ├── graders/
 │   └── grader.py                # Dense reward engine
 ├── server/
-│   ├── app.py                   # FastAPI (OpenEnv-compatible)
+│   ├── app.py                   # Legacy FastAPI (used by trainers)
 │   └── aml_environment.py       # Core env (15 tools + OS mechanics)
 ├── frontend/
 │   ├── prisma/schema.prisma     # DPO preference pair database
@@ -253,11 +255,19 @@ python demo_eval.py --model checkpoints/best
 
 ---
 
-## Docker
+## Deployment
 
 ```bash
+# Docker (local)
 docker build -t memex .
-docker run -p 8000:8000 memex
+docker run -p 7860:7860 memex
+
+# HF Spaces (one command)
+openenv push --exclude .hfignore
+# → https://huggingface.co/spaces/MuazTPM/aml_investigation_env
+
+# OpenEnv CLI
+openenv serve
 ```
 
 ---
