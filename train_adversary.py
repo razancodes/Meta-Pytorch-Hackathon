@@ -205,6 +205,7 @@ def run_battle(
     threshold: float = 0.3,
     db_path: Path = DB_PATH,
     verbose: bool = True,
+    is_local: bool = False,
 ) -> Dict[str, Any]:
     """Run the adversarial battle loop.
 
@@ -225,6 +226,7 @@ def run_battle(
         model=adversary_model,
         api_key=api_key,
         temperature=0.9,
+        is_local=is_local,
     )
 
     conn = init_db(db_path)
@@ -272,19 +274,19 @@ def run_battle(
                 results["saved_scenarios"].append(row_id)
 
                 if verbose:
-                    print(f"  [{ep:3d}/{episodes}] ❌ ADVERSARY WIN  "
+                    print(f"  [{ep:3d}/{episodes}] [FAIL] ADVERSARY WIN  "
                           f"score={defender_score:.3f}  typo={typo}  "
                           f"saved=row#{row_id}  ({gen_time:.1f}s)")
             else:
                 results["defender_wins"] += 1
                 if verbose:
-                    print(f"  [{ep:3d}/{episodes}] ✅ DEFENDER WIN   "
+                    print(f"  [{ep:3d}/{episodes}] [PASS] DEFENDER WIN   "
                           f"score={defender_score:.3f}  typo={typo}  ({gen_time:.1f}s)")
 
         except Exception as e:
             results["errors"] += 1
             if verbose:
-                print(f"  [{ep:3d}/{episodes}] ⚠ ERROR: {e}")
+                print(f"  [{ep:3d}/{episodes}] [!] ERROR: {e}")
 
     conn.close()
 
@@ -369,8 +371,16 @@ Examples:
         action="store_true",
         help="Suppress progress output",
     )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Run entirely locally using Unsloth (overrides adversary model to Llama 8B if default)",
+    )
 
     args = parser.parse_args()
+
+    if args.local and args.adversary_model == "gpt-4o-mini":
+        args.adversary_model = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
 
     results = run_battle(
         adversary_model=args.adversary_model,
@@ -381,6 +391,7 @@ Examples:
         threshold=args.threshold,
         db_path=args.db_path,
         verbose=not args.quiet,
+        is_local=args.local,
     )
 
     # Output JSON summary for piping

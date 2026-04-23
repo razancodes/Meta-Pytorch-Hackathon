@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import string
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -150,11 +151,15 @@ class AdversaryAgent:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 0.9,
+        is_local: bool = False,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.base_url = base_url or "https://api.openai.com/v1"
         self.temperature = temperature
+        self.is_local = is_local
+        self.local_model = None
+        self.local_tokenizer = None
 
     def generate(
         self,
@@ -172,7 +177,14 @@ class AdversaryAgent:
         """
         typo = typology or random.choice(self.TYPOLOGIES)
 
-        # Try LLM generation first
+        # Local LLM generation
+        if self.is_local:
+            local_scenario = self._generate_via_local_llm(typo, difficulty)
+            if local_scenario:
+                return self._normalize_to_scenario(local_scenario, typo, difficulty)
+            return self._generate_fallback(typo, difficulty)
+
+        # API LLM generation
         llm_scenario = self._generate_via_llm(typo, difficulty)
         if llm_scenario:
             return self._normalize_to_scenario(llm_scenario, typo, difficulty)
@@ -264,6 +276,69 @@ class AdversaryAgent:
                 return json.loads(content)
         except Exception as e:
             print(f"[AdversaryAgent] LLM generation (urllib) failed: {e}")
+            return None
+
+    def _generate_via_local_llm(
+        self, typology: str, difficulty: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Attempt to generate a scenario via a local Unsloth model."""
+        try:
+            from unsloth import FastLanguageModel
+            import torch
+        except ImportError:
+            print("[AdversaryAgent] Local inference requires 'unsloth'. Fallback to procedural.")
+            return None
+
+        if self.local_model is None:
+            print(f"[AdversaryAgent] Loading local model: {self.model}")
+            try:
+                self.local_model, self.local_tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=self.model,
+                    max_seq_length=2048,
+                    load_in_4bit=True,
+                )
+                FastLanguageModel.for_inference(self.local_model)
+            except Exception as e:
+                print(f"[AdversaryAgent] Failed to load local model {self.model}: {e}")
+                return None
+
+        prompt = (
+            f"Generate a {difficulty.upper()} difficulty {typology.replace('_', ' ')} "
+            f"money laundering scenario.\n\n{_SCENARIO_SCHEMA}"
+        )
+
+        messages = [
+            {"role": "system", "content": _ADVERSARY_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        
+        input_ids = self.local_tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+        ).to("cuda")
+
+        try:
+            outputs = self.local_model.generate(
+                input_ids=input_ids,
+                max_new_tokens=4096,
+                temperature=self.temperature,
+                do_sample=True,
+                pad_token_id=self.local_tokenizer.eos_token_id,
+            )
+            
+            response = self.local_tokenizer.decode(
+                outputs[0][input_ids.shape[1]:], skip_special_tokens=True
+            )
+            
+            # Extract JSON block
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+            else:
+                print("[AdversaryAgent] Local LLM failed to output valid JSON.")
+                return None
+                
+        except Exception as e:
+            print(f"[AdversaryAgent] Local LLM generation failed: {e}")
             return None
 
     def _normalize_to_scenario(
