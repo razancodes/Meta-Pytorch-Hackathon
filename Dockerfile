@@ -1,21 +1,43 @@
+# ============================================================================
+# Memex AML Investigation Environment — HF Spaces Dockerfile
+#
+# Deploys the OpenEnv-compatible FastAPI server to a Hugging Face Space.
+# HF Spaces expects port 7860 and a non-root user with UID 1000.
+#
+# Build:  docker build -t memex-aml-env .
+# Run:    docker run -p 7860:7860 memex-aml-env
+# ============================================================================
+
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install curl for health check
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+# System deps: curl for healthcheck, nothing else needed.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first (layer caching)
+# Python deps — layer-cached before source copy.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy full project
+# Copy full project source.
 COPY . /app/
 
-EXPOSE 8000
+# HF Spaces convention: non-root user with UID 1000.
+RUN useradd -m -u 1000 user && \
+    chown -R user:user /app
+USER user
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# HF Spaces default port.
+EXPOSE 7860
 
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Health probe: Docker HEALTHCHECK + HF Spaces liveness.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:7860/health || exit 1
+
+# Launch the OpenEnv server.
+# PORT env var is set by HF Spaces to 7860; our server reads it.
+ENV PORT=7860
+CMD ["uvicorn", "openenv_server:app", "--host", "0.0.0.0", "--port", "7860"]

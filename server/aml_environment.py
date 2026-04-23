@@ -76,6 +76,7 @@ class AMLEnvironment(Environment):
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self._state: AMLState = AMLState()
         self._current_scenario: Any = None
         self._grader: AMLGrader = AMLGrader()

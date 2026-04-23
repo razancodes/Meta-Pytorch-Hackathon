@@ -21,6 +21,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Node / Frontend
+node_modules/
+.next/
+.turbo/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -55,6 +60,7 @@ api_keys.json
 checkpoints/
 checkpoints_70b/
 demo_output/
+outputs/
 wandb/
 
 # Lock files (using requirements.txt)
