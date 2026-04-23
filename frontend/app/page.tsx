@@ -124,7 +124,24 @@ export default function Home() {
         <div className={styles.headerLeft}>
           <MemexLogo size="sm" />
           <span className={styles.headerSep}>│</span>
-          <span className={styles.headerSubtitle}>FINANCIAL CRIME INTELLIGENCE</span>
+          {view === 'case' ? (
+            <>
+              <button className="nx-btn nx-btn-icon" onClick={handleBackToMap} style={{ padding: '4px 8px', fontSize: '10px' }}>
+                ← MAP
+              </button>
+              <span className={styles.headerSep}>│</span>
+              <div style={{ display: 'flex', flexDirection: 'column', cursor: 'pointer' }}>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--nx-orange)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  {replayRef.current?.getMeta()?.alert?.alert_id || 'CASE-1MDB'}
+                </span>
+                <span style={{ fontSize: '9px', color: 'var(--nx-muted)', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
+                  Financial Crime Intelligence
+                </span>
+              </div>
+            </>
+          ) : (
+            <span className={styles.headerSubtitle}>FINANCIAL CRIME INTELLIGENCE</span>
+          )}
         </div>
         <div className={styles.headerCenter}>
           {view === 'case' && replayLoaded && (

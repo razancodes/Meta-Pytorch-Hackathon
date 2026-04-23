@@ -25,7 +25,14 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
   const [hoveredCorridor, setHoveredCorridor] = useState<MLCorridor | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [mapReady, setMapReady] = useState(false);
+  const [countries, setCountries] = useState<any>({ features: [] });
   const [viewMode, setViewMode] = useState<ViewMode>('3d');
+
+  useEffect(() => {
+    fetch('https://unpkg.com/globe.gl/example/datasets/ne_110m_admin_0_countries.geojson')
+      .then(res => res.json())
+      .then(data => setCountries(data));
+  }, []);
   const [GlobeComponent, setGlobeComponent] = useState<any>(null);
   const rafId = useRef<number | null>(null);
 
@@ -49,7 +56,7 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
       entityCount: hub.entityCount,
       region: hub.region,
     })),
-  []);
+    []);
 
   const globeArcsData = useMemo(() =>
     ML_CORRIDORS.map(corridor => {
@@ -71,7 +78,7 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
         typology: corridor.typology,
       };
     }).filter(Boolean),
-  []);
+    []);
 
   const globeLabelsData = useMemo(() =>
     ML_HUBS.map(hub => ({
@@ -81,7 +88,7 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
       size: 0.6,
       color: '#808088',
     })),
-  []);
+    []);
 
   // Handle 3D globe interactions
   const handleGlobePointClick = useCallback((point: any) => {
@@ -117,6 +124,7 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
         zoomControl: true,
         attributionControl: false,
         worldCopyJump: true,
+        preferCanvas: true,
       });
 
       mapInstance.current = map;
@@ -270,6 +278,8 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
         rafId.current = requestAnimationFrame(drawArcs);
       };
 
+      map.on('move', scheduleRedraw);
+      map.on('zoom', scheduleRedraw);
       map.on('moveend', scheduleRedraw);
       map.on('zoomend', scheduleRedraw);
       setTimeout(drawArcs, 200);
@@ -309,10 +319,14 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
             ref={globeRef}
             globeImageUrl=""
             backgroundColor="#131316"
-            atmosphereColor="rgba(234, 88, 12, 0.15)"
+            atmosphereColor="#ea580c"
             atmosphereAltitude={0.15}
             showAtmosphere={true}
-            showGraticules={true}
+            showGraticules={false}
+            polygonsData={countries?.features || []}
+            polygonCapColor={() => '#1c1c1f'}
+            polygonSideColor={() => '#1c1c1f'}
+            polygonStrokeColor={() => '#2A2A2D'}
             globeMaterial={undefined}
             customGlobeImage={undefined}
 

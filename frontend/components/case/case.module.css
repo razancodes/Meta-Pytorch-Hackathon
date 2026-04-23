@@ -66,11 +66,22 @@
 }
 
 /* ── Two-Panel Layout ────────────────────── */
-.panelLayout {
-  display: flex;
+.panelLayoutGrid {
+  display: grid;
+  grid-template-columns: 65% 35%;
+  grid-template-rows: 50% 50%;
+  grid-template-areas:
+    "graph env"
+    "graph terminal";
   flex: 1;
   overflow: hidden;
+  gap: 1px;
+  background: var(--nx-border);
 }
+
+.panelLayoutGrid > *:nth-child(1) { grid-area: graph; background: var(--nx-black); }
+.panelLayoutGrid > *:nth-child(2) { grid-area: env; background: var(--nx-black); }
+.panelLayoutGrid > *:nth-child(3) { grid-area: terminal; background: var(--nx-black); }
 
 .panel {
   display: flex;

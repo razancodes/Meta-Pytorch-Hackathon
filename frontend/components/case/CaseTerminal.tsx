@@ -20,8 +20,6 @@ type FullscreenPanel = 'graph' | 'env' | 'terminal' | null;
 
 export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSummary, caseId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [leftWidth, setLeftWidth] = useState(60);  // Entity graph takes 60%
-  const dragging = useRef<boolean>(false);
   const [fullscreen, setFullscreen] = useState<FullscreenPanel>(null);
 
   const currentStep = steps[currentStepIndex] || null;
@@ -48,18 +46,18 @@ export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSum
         if (id) scenarioData.customer_profiles[id] = p;
       }
       else if (step.action.tool === 'trace_network' && tr.network) {
-         const id = step.action.parameters.entity_id as string;
-         if (id) {
-           scenarioData.network_graph[id] = scenarioData.network_graph[id] || { connections: [] };
-           scenarioData.network_graph[id].connections.push(...(tr.network as any).connections);
-         }
+        const id = step.action.parameters.entity_id as string;
+        if (id) {
+          scenarioData.network_graph[id] = scenarioData.network_graph[id] || { connections: [] };
+          scenarioData.network_graph[id].connections.push(...(tr.network as any).connections);
+        }
       }
       else if (step.action.tool === 'query_transactions' && tr.transactions) {
-         scenarioData.transactions.push(...(tr.transactions as any[]));
+        scenarioData.transactions.push(...(tr.transactions as any[]));
       }
       else if (step.action.tool === 'check_watchlist' && tr.watchlist_result) {
-         const id = step.action.parameters.entity as string;
-         if (id) scenarioData.watchlist_results[id] = tr.watchlist_result;
+        const id = step.action.parameters.entity as string;
+        if (id) scenarioData.watchlist_results[id] = tr.watchlist_result;
       }
     });
 
@@ -68,10 +66,10 @@ export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSum
     if (alertMeta && alertMeta.customer_id) {
       if (!scenarioData.customer_profiles[alertMeta.customer_id]) {
         scenarioData.customer_profiles[alertMeta.customer_id] = {
-           customer_id: alertMeta.customer_id,
-           name: alertMeta.customer_id,
-           type: 'individual',
-           risk_rating: 'High'
+          customer_id: alertMeta.customer_id,
+          name: alertMeta.customer_id,
+          type: 'individual',
+          risk_rating: 'High'
         };
       }
     }
@@ -79,34 +77,6 @@ export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSum
     return scenarioToGraph(scenarioData);
   }, [visibleSteps, steps]);
 
-  // Single resizer drag handling
-  const handleMouseDown = useCallback(() => {
-    dragging.current = true;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  }, []);
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!dragging.current || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const pct = ((e.clientX - rect.left) / rect.width) * 100;
-      setLeftWidth(Math.max(30, Math.min(75, pct)));
-    };
-
-    const handleMouseUp = () => {
-      dragging.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, []);
 
   const toggleFullscreen = (panel: FullscreenPanel) => {
     setFullscreen(prev => (prev === panel ? null : panel));
@@ -121,7 +91,6 @@ export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSum
     return () => window.removeEventListener('keydown', handleKey);
   }, [fullscreen]);
 
-  const rightWidth = 100 - leftWidth;
 
   // Fullscreen panel rendering
   const renderFullscreenBtn = (panel: FullscreenPanel) => (
@@ -136,7 +105,7 @@ export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSum
 
   // Graph panel content
   const graphPanel = (
-    <div className={`${styles.panel} ${fullscreen === 'graph' ? styles.fullscreenOverlay : ''}`} style={fullscreen === 'graph' ? {} : { width: `${leftWidth}%` }}>
+    <div className={`${styles.panel} ${fullscreen === 'graph' ? styles.fullscreenOverlay : ''}`}>
       <div className={styles.panelHeaderBar}>
         <span className="nx-panel-title">ENTITY GRAPH</span>
         <div className={styles.panelHeaderActions}>
@@ -186,42 +155,11 @@ export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSum
 
   return (
     <div className={styles.caseContainer}>
-      {/* Top Bar */}
-      <div className={styles.caseTopBar}>
-        <button className="nx-btn" onClick={onBack}>
-          ← MAP
-        </button>
-        <div className={styles.caseInfo}>
-          <span className={styles.caseId}>{caseId || 'CASE-1MDB'}</span>
-          <span className={styles.caseSep}>│</span>
-          <span className={styles.caseSummary}>{alertSummary || 'Sovereign Wealth Fund Investigation'}</span>
-        </div>
-        <div className={styles.caseProgress}>
-          <span className="nx-label">STEP</span>
-          <span className={styles.caseStep}>
-            {String(currentStepIndex + 1).padStart(2, '0')}/{String(steps.length).padStart(2, '0')}
-          </span>
-        </div>
-      </div>
-
-      {/* Two-Column Layout: [EntityGraph (left) | System+Terminal stacked (right)] */}
-      <div className={styles.panelLayout} ref={containerRef}>
-        {/* Left: Entity Graph (wide) */}
+      {/* 3-Panel Grid Layout: Graph | System/Terminal stacked */}
+      <div className={styles.panelLayoutGrid} ref={containerRef}>
         {graphPanel}
-
-        {/* Resizer */}
-        <div
-          className="nx-resizer"
-          onMouseDown={handleMouseDown}
-        />
-
-        {/* Right: Stacked panels */}
-        <div className={styles.panel} style={{ width: `${rightWidth}%` }}>
-          <div className={styles.rightStack}>
-            {envPanel}
-            {terminalPanel}
-          </div>
-        </div>
+        {envPanel}
+        {terminalPanel}
       </div>
     </div>
   );

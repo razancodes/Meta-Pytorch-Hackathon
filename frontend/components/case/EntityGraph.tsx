@@ -104,7 +104,7 @@ export default function EntityGraph({ graphData }: Props) {
               'shape': (ele: any) => NODE_SHAPES[ele.data('type')] || 'ellipse',
               'color': '#D4D4D4',
               'font-size': '9px',
-              'font-family': "'JetBrains Mono', monospace",
+              'font-family': '"JetBrains Mono", monospace',
               'text-valign': 'bottom',
               'text-margin-y': 6,
               'text-outline-width': 4,
@@ -144,16 +144,13 @@ export default function EntityGraph({ graphData }: Props) {
               'target-arrow-shape': 'triangle',
               'curve-style': 'bezier',
               'font-size': '8px',
-              'font-family': "'JetBrains Mono', monospace",
+              'font-family': '"JetBrains Mono", monospace',
               'color': '#D4D4D4',
               'text-rotation': 'autorotate',
               'text-background-opacity': 1,
-              'text-background-color': '#131316',
+              'text-background-color': '#2A2A2D',
               'text-background-padding': 4,
-              'text-border-opacity': 1,
-              'text-border-color': '#2A2A2D',
-              'text-border-width': 1,
-              'text-border-shape': 'roundrectangle',
+              'text-background-shape': 'roundrectangle',
               'control-point-step-size': 80,
             } as any,
           },
@@ -188,25 +185,25 @@ export default function EntityGraph({ graphData }: Props) {
 
         const data = ele.data();
         let pos;
-        
+
         if (evt.originalEvent && containerRef.current) {
           const rect = containerRef.current.getBoundingClientRect();
           pos = {
-             x: evt.originalEvent.clientX - rect.left,
-             y: evt.originalEvent.clientY - rect.top
+            x: evt.originalEvent.clientX - rect.left,
+            y: evt.originalEvent.clientY - rect.top
           };
         } else {
           pos = type === 'node' ? ele.renderedPosition() : ele.renderedMidpoint();
         }
-        
+
         let x = pos.x + 16;
         let y = pos.y - 10;
-        
+
         if (containerRef.current) {
           const rect = containerRef.current.getBoundingClientRect();
-          const tooltipWidth = 220; 
-          const tooltipHeight = 120; 
-          
+          const tooltipWidth = 220;
+          const tooltipHeight = 120;
+
           if (x + tooltipWidth > rect.width) {
             x = pos.x - tooltipWidth - 16;
           }
