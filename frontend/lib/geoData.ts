@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// NEXUS — Geographic Data & ML Hub Coordinates
+// MEMEX — Geographic Data & ML Hub Coordinates
 // ═══════════════════════════════════════════════════════════════
 
 import { MLHub, MLCorridor } from './types';

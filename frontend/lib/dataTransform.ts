@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// NEXUS — Data Transform Utilities
+// MEMEX — Data Transform Utilities
 // ═══════════════════════════════════════════════════════════════
 
 import { GraphNode, GraphEdge, EntityNodeType, EdgeType } from './types';
@@ -18,7 +18,7 @@ function inferNodeType(profile: Record<string, unknown>): EntityNodeType {
   const name = (profile.name as string || '').toLowerCase();
   const notes = (profile.notes as string || '').toLowerCase();
 
-  if (type === 'individual' || profile.date_of_birth) return 'person';
+  if (type === 'individual' || profile.date_of_birth || profile.occupation || profile.nationality) return 'person';
   if (notes.includes('shell') || notes.includes('no employees') || notes.includes('no commercial')) return 'shell';
   if (type === 'business' || profile.business_type || profile.directors) return 'company';
   if (name.includes('account') || name.includes('acc-')) return 'account';
@@ -72,6 +72,20 @@ export function scenarioToGraph(scenario: ScenarioData): { nodes: GraphNode[]; e
   const edgeIds = new Set<string>();
   for (const [entityId, node] of Object.entries(network)) {
     if (!node.connections) continue;
+
+    // Ensure source node exists
+    if (!nodeIds.has(entityId)) {
+      nodeIds.add(entityId);
+      nodes.push({
+        id: entityId,
+        label: entityId, // fallback
+        type: entityId.startsWith('CUST') ? 'person' : 'company',
+        risk: 40,
+        flagged: false,
+        pep: false,
+      });
+    }
+
     for (const conn of node.connections) {
       const targetId = (conn.entity_id as string) || (conn.entity as string) || '';
       if (!targetId) continue;

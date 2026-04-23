@@ -9,9 +9,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "NEXUS — Financial Crime Intelligence Terminal",
+  title: "MEMEX — Financial Crime Intelligence Terminal",
   description: "Real-time AML investigation and threat intelligence platform. Autonomous agent monitoring with OS-level mechanics visualization.",
-  keywords: ["AML", "financial crime", "intelligence", "investigation", "money laundering"],
+  keywords: ["AML", "financial crime", "intelligence", "investigation", "money laundering", "memex"],
 };
 
 export default function RootLayout({

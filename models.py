@@ -337,3 +337,10 @@ class AMLState(BaseModel):
     async_timeout_count: int = 0
     successful_pages: int = 0
     meta_injections: int = 0
+
+    # --- Reward Farming Hard Caps ---
+    # Maximum rewarded calls per episode (prevents PPO farming).
+    # write_to_case_file: max 3 rewarded calls (+0.10 each)
+    # update_system_prompt: max 2 rewarded calls (+0.15 each)
+    disk_write_reward_count: int = 0
+    kernel_inject_reward_count: int = 0

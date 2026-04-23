@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS — Financial Crime Intelligence Terminal
+   MEMEX — Financial Crime Intelligence Terminal
    Design System & Global Styles
    ═══════════════════════════════════════════════════════════════ */
 
@@ -17,25 +17,25 @@ html, body {
 
 /* ── Design Tokens ────────────────────────────────────────────── */
 :root {
-  /* Base palette */
-  --nx-black:        #000000;
-  --nx-surface:      #0A0A0A;
-  --nx-surface-alt:  #0F0F0F;
-  --nx-border:       #1A1A1A;
-  --nx-border-hover: #2A2A2A;
-  --nx-muted:        #404040;
+  /* Base palette — smoky gray, easy on the eyes */
+  --nx-black:        #131316;
+  --nx-surface:      #1C1C1F;
+  --nx-surface-alt:  #222225;
+  --nx-border:       #2A2A2D;
+  --nx-border-hover: #3A3A3D;
+  --nx-muted:        #505055;
   --nx-text:         #D4D4D4;
-  --nx-text-dim:     #737373;
+  --nx-text-dim:     #808088;
   --nx-text-bright:  #EEEEEE;
 
-  /* Accents */
+  /* Accents — soothing warm tones */
   --nx-orange:       #EA580C;
   --nx-orange-dim:   #9A3412;
   --nx-orange-glow:  rgba(234, 88, 12, 0.15);
   --nx-orange-glow2: rgba(234, 88, 12, 0.06);
-  --nx-red:          #E11D48;
-  --nx-red-dim:      #9F1239;
-  --nx-red-glow:     rgba(225, 29, 72, 0.15);
+  --nx-red:          #D4334A;
+  --nx-red-dim:      #8B1A2B;
+  --nx-red-glow:     rgba(212, 51, 74, 0.15);
   --nx-green:        #22C55E;
   --nx-green-dim:    #15803D;
   --nx-green-glow:   rgba(34, 197, 94, 0.15);
@@ -44,7 +44,7 @@ html, body {
   --nx-cyan:         #06B6D4;
 
   /* Geometry */
-  --nx-radius:       2px;
+  --nx-radius:       3px;
   --nx-border-width: 1px;
 
   /* Spacing */
@@ -204,12 +204,12 @@ body {
   background: linear-gradient(
     to bottom,
     transparent,
-    rgba(234, 88, 12, 0.08),
+    rgba(234, 88, 12, 0.06),
     transparent
   );
   z-index: 9999;
   pointer-events: none;
-  animation: nx-scanline 3s ease-in-out infinite;
+  animation: nx-scanline 4s ease-in-out infinite;
 }
 
 /* Digit flicker for value updates */
@@ -399,6 +399,26 @@ body {
 
 .nx-btn--primary:hover {
   background: var(--nx-orange-glow);
+}
+
+/* ── Fullscreen button ────────────────────────────────────────── */
+.nx-fullscreen-btn {
+  font-family: var(--nx-font);
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--nx-radius);
+  background: transparent;
+  color: var(--nx-muted);
+  cursor: pointer;
+  transition: all var(--nx-duration) var(--nx-ease);
+  line-height: 1;
+}
+
+.nx-fullscreen-btn:hover {
+  color: var(--nx-orange);
+  border-color: var(--nx-border);
+  background: var(--nx-orange-glow2);
 }
 
 /* ── Leaflet overrides (dark theme) ───────────────────────────── */

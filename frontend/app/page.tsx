@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import styles from './page.module.css';
-import NexusLogo from '@/components/ui/NexusLogo';
+import MemexLogo from '@/components/ui/MemexLogo';
 import StatusIndicator from '@/components/ui/StatusIndicator';
 import ReplayControls from '@/components/ui/ReplayControls';
 import CaseTerminal from '@/components/case/CaseTerminal';
@@ -11,7 +11,7 @@ import { ReplayEngine } from '@/lib/replay';
 import { isBackendAvailable } from '@/lib/api';
 import type { ViewState, ReplayStep } from '@/lib/types';
 
-// Dynamic import for Leaflet (no SSR)
+// Dynamic import for map (no SSR)
 const GlobalThreatMap = dynamic(
   () => import('@/components/globe/GlobalThreatMap'),
   { ssr: false, loading: () => <div className={styles.mapLoading}>&gt; INITIALIZING MAP ENGINE...</div> }
@@ -122,7 +122,7 @@ export default function Home() {
       {/* Global Header */}
       <header className={styles.header}>
         <div className={styles.headerLeft}>
-          <NexusLogo size="sm" />
+          <MemexLogo size="sm" />
           <span className={styles.headerSep}>│</span>
           <span className={styles.headerSubtitle}>FINANCIAL CRIME INTELLIGENCE</span>
         </div>
@@ -143,12 +143,6 @@ export default function Home() {
           )}
         </div>
         <div className={styles.headerRight}>
-          <button
-            className={`nx-btn ${mode === 'live' ? 'nx-btn--active' : ''}`}
-            onClick={() => setMode(mode === 'live' ? 'replay' : 'live')}
-          >
-            {mode === 'live' ? 'LIVE' : 'REPLAY'}
-          </button>
           <StatusIndicator
             status={backendStatus}
             label={backendStatus === 'connected' ? 'LIVE' : backendStatus === 'replay' ? 'REPLAY' : 'OFFLINE'}

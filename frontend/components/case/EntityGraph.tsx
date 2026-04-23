@@ -1,33 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import styles from './case.module.css';
 import type { ReplayStep, GraphNode, GraphEdge } from '@/lib/types';
 import { scenarioToGraph, riskToColor, nodeSize } from '@/lib/dataTransform';
 
-// Mock scenario graph data from the 1MDB case
-const MOCK_GRAPH_DATA = {
-  nodes: [
-    { id: 'CUST-1MDB-001', label: 'Taek Jho Lowe', type: 'person' as const, risk: 92, jurisdiction: 'Malaysia', flagged: true, pep: true },
-    { id: 'ENT-GSTAR-001', label: 'Golden Star Holdings', type: 'shell' as const, risk: 88, jurisdiction: 'Seychelles', flagged: true },
-    { id: 'ENT-ARBL-001', label: 'Arabella Investments', type: 'shell' as const, risk: 85, jurisdiction: 'BVI', flagged: false },
-    { id: 'ENT-PETRA-001', label: 'PetraStar Energy Fund', type: 'company' as const, risk: 60, jurisdiction: 'Malaysia', flagged: false },
-    { id: 'CUST-CHEN-002', label: 'Sarah Chen', type: 'person' as const, risk: 15, jurisdiction: 'Singapore', flagged: false },
-    { id: 'real-estate-ny', label: 'Real Estate Holdings (NY)', type: 'asset' as const, risk: 40 },
-    { id: 'art-dealer', label: 'Art Dealer (Geneva)', type: 'asset' as const, risk: 35 },
-  ],
-  edges: [
-    { id: 'e1', source: 'ENT-PETRA-001', target: 'ENT-GSTAR-001', type: 'transaction' as const, label: '$681M', amount: 681000000, suspicious: true },
-    { id: 'e2', source: 'ENT-GSTAR-001', target: 'ENT-ARBL-001', type: 'transaction' as const, label: '$260M', amount: 260000000, suspicious: true },
-    { id: 'e3', source: 'ENT-ARBL-001', target: 'real-estate-ny', type: 'transaction' as const, label: '$250M', amount: 250000000, suspicious: true },
-    { id: 'e4', source: 'ENT-ARBL-001', target: 'art-dealer', type: 'transaction' as const, label: '$135M', amount: 135000000, suspicious: true },
-    { id: 'e5', source: 'ENT-GSTAR-001', target: 'CUST-1MDB-001', type: 'transaction' as const, label: '$30M', amount: 30000000, suspicious: true },
-    { id: 'e6', source: 'ENT-ARBL-001', target: 'ENT-PETRA-001', type: 'transaction' as const, label: '$6M (reversal)', amount: 6000000, suspicious: false },
-    { id: 'e7', source: 'CUST-1MDB-001', target: 'ENT-GSTAR-001', type: 'ownership' as const, label: 'Director' },
-    { id: 'e8', source: 'ENT-GSTAR-001', target: 'ENT-ARBL-001', type: 'suspicious' as const, label: 'Shared Address' },
-    { id: 'e9', source: 'CUST-1MDB-001', target: 'ENT-PETRA-001', type: 'association' as const, label: 'Consultant' },
-  ],
-};
+
 
 const NODE_SHAPES: Record<string, string> = {
   person: 'ellipse',
@@ -42,8 +20,8 @@ const NODE_SHAPES: Record<string, string> = {
 const EDGE_COLORS: Record<string, string> = {
   ownership: '#8B5CF6',
   transaction: '#EA580C',
-  association: '#404040',
-  suspicious: '#E11D48',
+  association: '#505055',
+  suspicious: '#D4334A',
   director: '#8B5CF6',
 };
 
@@ -63,14 +41,32 @@ const getIconSvg = (type: string, color: string) => {
 };
 
 interface Props {
-  currentStep: ReplayStep | null;
+  graphData: { nodes: GraphNode[]; edges: GraphEdge[] };
 }
 
-export default function EntityGraph({ currentStep }: Props) {
+export default function EntityGraph({ graphData }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<any>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [tooltipData, setTooltipData] = useState<{ node: GraphNode; x: number; y: number } | null>(null);
+  const [tooltipData, setTooltipData] = useState<{ type: 'node' | 'edge'; data: any; x: number; y: number } | null>(null);
+  const prevNodeIdsRef = useRef<Set<string>>(new Set());
+
+  // Cola layout config — tuned for spacing and stability
+  const colaLayoutConfig = useMemo(() => ({
+    name: 'cola',
+    animate: true,
+    animationDuration: 1000,
+    animationEasing: 'ease-in-out-cubic' as any,
+    fit: true,
+    padding: 80,
+    randomize: false,
+    nodeSpacing: 80,
+    edgeLength: 150,
+    convergenceThreshold: 0.01,
+    nodeRepulsion: 8000,
+    idealEdgeLength: 120,
+    avoidOverlap: true,
+  }), []);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -86,13 +82,11 @@ export default function EntityGraph({ currentStep }: Props) {
         cytoscape.use(cola);
       } catch { /* already registered */ }
 
-      const data = MOCK_GRAPH_DATA;
-
       const elements = [
-        ...data.nodes.map(n => ({
+        ...graphData.nodes.map(n => ({
           data: { id: n.id, label: n.label, type: n.type, risk: n.risk, jurisdiction: n.jurisdiction, flagged: n.flagged, pep: n.pep },
         })),
-        ...data.edges.map(e => ({
+        ...graphData.edges.map(e => ({
           data: { id: e.id, source: e.source, target: e.target, type: e.type, label: e.label, amount: e.amount, suspicious: e.suspicious },
         })),
       ];
@@ -104,22 +98,21 @@ export default function EntityGraph({ currentStep }: Props) {
           {
             selector: 'node',
             style: {
-              'background-color': '#050505',
+              'background-color': '#1C1C1F',
               'width': (ele: any) => nodeSize(ele.data('risk') || 30),
               'height': (ele: any) => nodeSize(ele.data('risk') || 30),
               'shape': (ele: any) => NODE_SHAPES[ele.data('type')] || 'ellipse',
-              'label': 'data(label)',
               'color': '#D4D4D4',
               'font-size': '9px',
               'font-family': "'JetBrains Mono', monospace",
               'text-valign': 'bottom',
               'text-margin-y': 6,
               'text-outline-width': 4,
-              'text-outline-color': '#000',
+              'text-outline-color': '#131316',
               'border-width': 2,
               'border-style': (ele: any) => ele.data('type') === 'shell' ? 'dashed' : 'solid',
               'border-color': (ele: any) => {
-                if (ele.data('flagged')) return '#E11D48';
+                if (ele.data('flagged')) return '#D4334A';
                 return riskToColor(ele.data('risk') || 30);
               },
               'background-image': (ele: any) => getIconSvg(ele.data('type'), riskToColor(ele.data('risk') || 30)),
@@ -146,30 +139,29 @@ export default function EntityGraph({ currentStep }: Props) {
                 if (amt) return Math.max(1, Math.min(4, Math.log10(amt / 100000)));
                 return 1;
               },
-              'line-color': (ele: any) => EDGE_COLORS[ele.data('type')] || '#404040',
-              'target-arrow-color': (ele: any) => EDGE_COLORS[ele.data('type')] || '#404040',
+              'line-color': (ele: any) => EDGE_COLORS[ele.data('type')] || '#505055',
+              'target-arrow-color': (ele: any) => EDGE_COLORS[ele.data('type')] || '#505055',
               'target-arrow-shape': 'triangle',
               'curve-style': 'bezier',
-              'label': 'data(label)',
               'font-size': '8px',
               'font-family': "'JetBrains Mono', monospace",
               'color': '#D4D4D4',
               'text-rotation': 'autorotate',
               'text-background-opacity': 1,
-              'text-background-color': '#000',
+              'text-background-color': '#131316',
               'text-background-padding': 4,
               'text-border-opacity': 1,
-              'text-border-color': '#1A1A1A',
+              'text-border-color': '#2A2A2D',
               'text-border-width': 1,
               'text-border-shape': 'roundrectangle',
-              'control-point-step-size': 60,
+              'control-point-step-size': 80,
             } as any,
           },
           {
             selector: 'edge[?suspicious]',
             style: {
-              'line-color': '#E11D48',
-              'target-arrow-color': '#E11D48',
+              'line-color': '#D4334A',
+              'target-arrow-color': '#D4334A',
               'line-style': 'solid',
               'width': 2.5,
             },
@@ -179,34 +171,41 @@ export default function EntityGraph({ currentStep }: Props) {
             style: { 'opacity': 0.12 },
           },
         ],
-        layout: {
-          name: 'circle',
-          radius: 180,
-          startAngle: 3 / 2 * Math.PI,
-          animate: true,
-          animationDuration: 800,
-          fit: true,
-          padding: 60,
-        } as any,
+        layout: colaLayoutConfig as any,
       });
 
       cyRef.current = cy;
+      prevNodeIdsRef.current = new Set(graphData.nodes.map(n => n.id));
 
-      cy.on('mouseover', 'node', (evt: any) => {
-        const node = evt.target;
+      const handleMouseOver = (type: 'node' | 'edge') => (evt: any) => {
+        const ele = evt.target;
         cy.elements().addClass('dimmed');
-        node.neighborhood().add(node).removeClass('dimmed');
+        if (type === 'node') {
+          ele.neighborhood().add(ele).removeClass('dimmed');
+        } else {
+          ele.connectedNodes().add(ele).removeClass('dimmed');
+        }
 
-        const pos = evt.renderedPosition;
-        const data = node.data();
+        const data = ele.data();
+        let pos;
+        
+        if (evt.originalEvent && containerRef.current) {
+          const rect = containerRef.current.getBoundingClientRect();
+          pos = {
+             x: evt.originalEvent.clientX - rect.left,
+             y: evt.originalEvent.clientY - rect.top
+          };
+        } else {
+          pos = type === 'node' ? ele.renderedPosition() : ele.renderedMidpoint();
+        }
         
         let x = pos.x + 16;
         let y = pos.y - 10;
         
         if (containerRef.current) {
           const rect = containerRef.current.getBoundingClientRect();
-          const tooltipWidth = 220; // approximate max width
-          const tooltipHeight = 120; // approximate max height
+          const tooltipWidth = 220; 
+          const tooltipHeight = 120; 
           
           if (x + tooltipWidth > rect.width) {
             x = pos.x - tooltipWidth - 16;
@@ -216,14 +215,13 @@ export default function EntityGraph({ currentStep }: Props) {
           }
         }
 
-        setTooltipData({
-          node: data as GraphNode,
-          x,
-          y,
-        });
-      });
+        setTooltipData({ type, data, x, y });
+      };
 
-      cy.on('mouseout', 'node', () => {
+      cy.on('mouseover', 'node', handleMouseOver('node'));
+      cy.on('mouseover', 'edge', handleMouseOver('edge'));
+
+      cy.on('mouseout', 'node, edge', () => {
         cy.elements().removeClass('dimmed');
         setTooltipData(null);
       });
@@ -232,18 +230,17 @@ export default function EntityGraph({ currentStep }: Props) {
         const nodeData = evt.target.data() as GraphNode;
         setSelectedNode(prev => {
           if (prev?.id === nodeData.id) {
-            evt.target.unselect(); // Explicitly remove focus ring
-            return null; // Toggle off
+            evt.target.unselect();
+            return null;
           }
-          return nodeData; // Select new
+          return nodeData;
         });
       });
 
-      // Click background to deselect
       cy.on('tap', (evt: any) => {
         if (evt.target === cy) {
           setSelectedNode(null);
-          cy.elements().unselect(); // Explicitly remove all focus rings
+          cy.elements().unselect();
         }
       });
     };
@@ -257,34 +254,108 @@ export default function EntityGraph({ currentStep }: Props) {
         cyRef.current = null;
       }
     };
-  }, []);
+  }, []); // Initial load only
+
+  const newElements = useMemo(() => [
+    ...graphData.nodes.map(n => ({
+      data: { id: n.id, label: n.label, type: n.type, risk: n.risk, jurisdiction: n.jurisdiction, flagged: n.flagged, pep: n.pep },
+    })),
+    ...graphData.edges.map(e => ({
+      data: { id: e.id, source: e.source, target: e.target, type: e.type, label: e.label, amount: e.amount, suspicious: e.suspicious },
+    })),
+  ], [graphData]);
+
+  const elementsSignature = useMemo(() => JSON.stringify(newElements), [newElements]);
+
+  // Incremental layout update — only add new nodes/edges, don't scatter existing ones
+  useEffect(() => {
+    if (!cyRef.current) return;
+    const cy = cyRef.current;
+    if (!containerRef.current) return;
+
+    const currentNodeIds = new Set(graphData.nodes.map(n => n.id));
+    const currentEdgeIds = new Set(graphData.edges.map(e => e.id));
+    const existingNodeIds = new Set<string>(cy.nodes().map((n: any) => n.id()));
+    const existingEdgeIds = new Set<string>(cy.edges().map((e: any) => e.id()));
+
+    // Find new elements to add
+    const nodesToAdd = newElements.filter(
+      el => el.data.id && !('source' in el.data) && !existingNodeIds.has(el.data.id)
+    );
+    const edgesToAdd = newElements.filter(
+      el => 'source' in el.data && !existingEdgeIds.has(el.data.id)
+    );
+
+    // Find elements to remove
+    const nodeIdsToRemove = [...existingNodeIds].filter(id => !currentNodeIds.has(id));
+    const edgeIdsToRemove = [...existingEdgeIds].filter(id => !currentEdgeIds.has(id));
+
+    let needsLayout = false;
+
+    if (nodeIdsToRemove.length > 0 || edgeIdsToRemove.length > 0) {
+      [...nodeIdsToRemove, ...edgeIdsToRemove].forEach(id => {
+        const el = cy.getElementById(id);
+        if (el.length) el.remove();
+      });
+      needsLayout = true;
+    }
+
+    if (nodesToAdd.length > 0 || edgesToAdd.length > 0) {
+      cy.add([...nodesToAdd, ...edgesToAdd]);
+      needsLayout = true;
+    }
+
+    if (needsLayout) {
+      cy.layout({
+        ...colaLayoutConfig,
+        animate: true,
+        animationDuration: 1000,
+        fit: cy.nodes().length <= 8,
+        randomize: false,
+      } as any).run();
+    }
+
+    prevNodeIdsRef.current = currentNodeIds;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elementsSignature]);
 
   return (
     <div className={styles.graphContainer}>
-      <div className="nx-panel-header">
-        <span className="nx-panel-title">ENTITY GRAPH</span>
-        <span className="nx-panel-badge nx-tag">{MOCK_GRAPH_DATA.nodes.length} NODES</span>
-      </div>
       <div ref={containerRef} className={styles.graphCanvas} />
 
       {/* Floating tooltip */}
-      {tooltipData && (
+      {tooltipData && tooltipData.type === 'node' && (
         <div className={styles.graphTooltip} style={{ left: tooltipData.x, top: tooltipData.y + 40 }}>
           <div className={styles.ttHeader}>
-            <span className={styles.ttType}>{tooltipData.node.type?.toUpperCase()}</span>
-            <span className={styles.ttRisk} style={{ color: riskToColor(tooltipData.node.risk || 0) }}>
-              RISK {tooltipData.node.risk || 0}
+            <span className={styles.ttType}>{tooltipData.data.type?.toUpperCase()}</span>
+            <span className={styles.ttRisk} style={{ color: riskToColor(tooltipData.data.risk || 0) }}>
+              RISK {tooltipData.data.risk || 0}
             </span>
           </div>
-          <div className={styles.ttName}>{tooltipData.node.label}</div>
-          {tooltipData.node.jurisdiction && (
-            <div className={styles.ttRow}><span>Jurisdiction</span><span>{tooltipData.node.jurisdiction}</span></div>
+          <div className={styles.ttName}>{tooltipData.data.label}</div>
+          {tooltipData.data.jurisdiction && (
+            <div className={styles.ttRow}><span>Jurisdiction</span><span>{tooltipData.data.jurisdiction}</span></div>
           )}
-          {tooltipData.node.pep && (
+          {tooltipData.data.pep && (
             <div className={styles.ttFlag}>⚠ PEP — Politically Exposed Person</div>
           )}
-          {tooltipData.node.flagged && !tooltipData.node.pep && (
+          {tooltipData.data.flagged && !tooltipData.data.pep && (
             <div className={styles.ttFlag}>⚠ Flagged for review</div>
+          )}
+        </div>
+      )}
+
+      {tooltipData && tooltipData.type === 'edge' && (
+        <div className={styles.graphTooltip} style={{ left: tooltipData.x, top: tooltipData.y + 40 }}>
+          <div className={styles.ttHeader}>
+            <span className={styles.ttType}>{tooltipData.data.type?.toUpperCase() || 'CONNECTION'}</span>
+          </div>
+          <div className={styles.ttName}>{tooltipData.data.label}</div>
+          {tooltipData.data.amount && (
+            <div className={styles.ttRow}><span>Amount</span><span>${(tooltipData.data.amount).toLocaleString()}</span></div>
+          )}
+          {tooltipData.data.suspicious && (
+            <div className={styles.ttFlag}>⚠ Suspicious Pattern</div>
           )}
         </div>
       )}

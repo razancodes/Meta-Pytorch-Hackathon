@@ -11,6 +11,12 @@ Implements the two-tier reward system:
      - Decision correctness, typology, findings coverage, entity F1,
        efficiency — mapped to [-1.0, +1.0] range.
 
+NOTE: Reward farming hard caps are enforced at the environment level
+(aml_environment.py), not here. The environment suppresses the
+is_successful_page flag after 3 rewarded writes and is_meta_injection
+after 2 rewarded injections per episode. The grader itself is stateless
+w.r.t. these caps — it trusts the flags it receives.
+
 The grader no longer calls get_scenario() at terminal time — it receives
 the ground_truth dict directly from the environment to avoid re-generating
 a different procedural scenario.

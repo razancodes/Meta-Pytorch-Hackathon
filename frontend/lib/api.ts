@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// NEXUS — API Client (Live Mode)
+// MEMEX — API Client (Live Mode)
 // ═══════════════════════════════════════════════════════════════
 
 import { StepResponse } from './types';

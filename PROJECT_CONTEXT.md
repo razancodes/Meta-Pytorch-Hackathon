@@ -20,6 +20,9 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | **Models** | `models.py` | Single source of truth for all Pydantic types: `AMLAction`, `AMLObservation`, `AMLState`, `AsyncJobInfo`, `AGUIState` |
 | **State Manager** | `state_manager.py` | OS mechanics engine: RAM eviction (2-slot context), Disk persistence, Async Job Queue, Kernel Directives |
 | **Procedural Generator** | `scenarios/procedural_generator.py` | Dynamic POMDP scenario builder: 3 typologies × 3 difficulties, unique IDs per episode |
+| **Adversary Agent** | `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator (mule rings, pass-throughs, phantom invoices) |
+| **Battle Orchestrator** | `train_adversary.py` | GAN-style adversarial loop that tests the Defender and saves evasive graphs to SQLite |
+| **Adversarial DB** | `adversarial_successes.db` | SQLite database storing failed scenarios (negative examples) |
 | **Compliance Manual** | `scenarios/compliance_manual.py` | Searchable AML rule corpus for kernel updates |
 | **Environment** | `server/aml_environment.py` | Core environment: 15 tool handlers + State Manager integration |
 | **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + terminal composite score [-1.0, +1.0] |
@@ -38,7 +41,7 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 1. **Virtual Memory (RAM Eviction)**
    - Agent context window = last 2 observations only
-   - `write_to_case_file(content)` → pages data to persistent disk (+0.10 reward)
+   - `write_to_case_file(content)` → pages data to persistent disk (+0.10 reward, hard-capped at 3 per episode)
    - Page Fault: referencing evicted data NOT on disk → -0.05 penalty
 
 2. **Interrupts (Async Queue)**
@@ -48,7 +51,7 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 3. **Kernel Updates (Self-Improvement)**
    - `search_compliance_manual(query)` → find AML rules
-   - `update_system_prompt(rule)` → inject into active kernel directives (+0.15)
+   - `update_system_prompt(rule)` → inject into active kernel directives (+0.15 reward, hard-capped at 2 per episode)
 
 ### Tool Roster (15 total)
 
@@ -58,7 +61,7 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 ### Reward System
 
-**Per-step:** action cost (-0.02), redundancy (-0.03), unique tool (+0.03), page fault (-0.05), async timeout (-0.10), disk write (+0.10), kernel inject (+0.15)
+**Per-step:** action cost (-0.02), redundancy (-0.03), unique tool (+0.03), page fault (-0.05), async timeout (-0.10), disk write (+0.10, max 3/episode), kernel inject (+0.15, max 2/episode)
 
 **Terminal:** decision accuracy (0.30) + typology (0.15) + findings coverage (0.25) + entity F1 (0.15) + efficiency (0.15) → mapped to [-1.0, +1.0]
 
@@ -92,23 +95,26 @@ All entity IDs are procedurally generated per episode — no memorization possib
 The backend is invisible by design — an LLM managing RAM eviction and async queues produces no visual signal. The **AGUI** solves this by emitting a strict JSON `agui_state` payload after every environment step, which the Next.js frontend consumes to render a real-time **4-Panel Tactical Dashboard**:
 
 ```
-┌───────────────────────────────┬───────────────────────────────┐
-│        RAM MONITOR            │       DISK STORAGE            │
-│                               │                               │
-│  Capacity: 2/2 observations   │  1. PEP confirmed: ENT_B      │
-│  [█████████████ FULL]         │  2. Shared address: ENT_B/C   │
-│                               │  3. $500K fan-out in 24hrs    │
-│  Slot 1: trace_network result │                               │
-│  Slot 2: check_watchlist hit  │  (persistent across eviction) │
-├───────────────────────────────┼───────────────────────────────┤
-│     ACTIVE PROCESSES          │     KERNEL DIRECTIVES         │
-│                               │                               │
-│  REQ-001: wire_trace          │  [BASE] ReAct investigation   │
-│    ETA: 0 steps (READY)       │  [INJECTED] CTR threshold:    │
-│  REQ-002: wire_trace          │    $10,000 (31 USC §5313)     │
-│    ETA: 2 steps (PENDING)     │  [INJECTED] FATF high-risk    │
-│                               │    jurisdictions list         │
-└───────────────────────────────┴───────────────────────────────┘
+┌─────────────────────────────────────┬─────────────────────────────────┐
+│        ENTITY GRAPH                 │   RAM MONITOR & DISK STORAGE    │
+│        (60% Width)                  │         (Stacked Right)         │
+│                                     │                                 │
+│  [3D Globe / Flat Map Toggle]       │  Capacity: 2/2 observations     │
+│  react-globe.gl vectors             │  [█████████████ FULL]           │
+│  Cytoscape.js Cola Physics          │                                 │
+│                                     │  1. PEP confirmed: ENT_B        │
+│  (Smooth Incremental Updates)       │  2. Shared address: ENT_B/C     │
+│                                     ├─────────────────────────────────┤
+│                                     │    ACTIVE PROCESSES             │
+│                                     │                                 │
+│                                     │  REQ-001: wire_trace            │
+│                                     │    ETA: 0 steps (READY)         │
+│                                     ├─────────────────────────────────┤
+│                                     │     KERNEL DIRECTIVES           │
+│                                     │                                 │
+│                                     │  [BASE] ReAct investigation     │
+│                                     │  [INJECTED] CTR threshold:      │
+└─────────────────────────────────────┴─────────────────────────────────┘
 ```
 
 **Data contract:** `state_manager.py` builds the `AGUIState` object (defined in `models.py`) containing `ram_usage` (capacity string + active context list), `disk_storage` (list of persisted findings), `async_jobs` (job IDs with ETAs and statuses), and `kernel_directives` (base + agent-injected rules). This payload is nested inside `observation.metadata.agui_state` on every `/step` response.
@@ -187,7 +193,7 @@ The demo runs in two modes:
 1. **Scripted** (`--dry-run`): 15 hardcoded investigation steps, no GPU needed. Produces a perfect +1.01 score for deterministic stage presentations.
 2. **LLM-driven** (`--model checkpoints/best`): The trained agent investigates the 1MDB case autonomously, proving that procedural training transfers to real-world scenarios.
 
-Both modes capture AGUI state for frontend replay, giving judges a cinematic walkthrough of the agent managing its own operating system while solving a $681M money laundering case.
+Both modes capture AGUI state for frontend replay, giving judges a cinematic walkthrough of the agent managing its own operating system while solving a $681M money laundering case. This includes dynamic 3D threat mapping via `react-globe.gl` and smooth incremental entity graph updates to ensure a highly persuasive visual presentation.
 
 ---
 
@@ -263,6 +269,10 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 3. **Dockerfile rewrite:** HF Spaces compliant — non-root user (UID 1000), port 7860, `HEALTHCHECK`, `openenv_server:app` entrypoint.
 4. **`.hfignore`:** Dedicated exclude file for `openenv push` — excludes `frontend/`, `venv/`, binary files. Reduced upload from 558MB to ~5MB.
 5. **HF Space deployed:** `MuazTPM/aml_investigation_env` live at https://huggingface.co/spaces/MuazTPM/aml_investigation_env
+6. **Frontend Overhaul:** Transitioned AGUI to a 2-column layout (Entity Graph on left, State/Terminal stacked on right). Rebranded Nexus to Memex with a new smoky gray (`#131316`) color palette.
+7. **3D Physics & Visuals:** Integrated `react-globe.gl` for dynamic 3D threat mapping. Optimized Cytoscape `cola` physics with incremental add/remove logic for stable, non-destructive graph animations during replay.
+8. **Adversarial Training Loop:** Added an LLM-backed Adversary Agent (`adversary_agent.py`) and Battle Orchestrator (`train_adversary.py`) to generate evasive AML scenarios. Failed defender attempts are saved to an SQLite database (`adversarial_successes.db`) as negative examples for the DPO pipeline.
+9. **Reward Integrity:** Implemented hard caps to prevent PPO reward farming: maximum 3 rewarded disk writes (+0.10) and 2 rewarded kernel injections (+0.15) per episode. Subsequent calls still incur the standard action penalty.
 
 ### 2026-04-22
 

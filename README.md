@@ -49,11 +49,11 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        FRONTEND (Next.js)                           │
-│  ┌───────────────┬──────────────┬──────────────┬─────────────────┐  │
-│  │  RAM Monitor  │ Disk Storage │   Active     │    Kernel       │  │
-│  │  2/2 █████    │ findings...  │  Processes   │   Directives    │  │
-│  │  (evicts old) │ (persistent) │  REQ-001 ✓   │ [BASE] + [INJ]  │  │
-│  └───────────────┴──────────────┴──────────────┴─────────────────┘  │
+│  ┌────────────────────────────────┬──────────────────────────────┐  │
+│  │  3D Threat Map & Entity Graph  │  RAM Monitor / Disk Storage  │  │
+│  │  (react-globe.gl + cola)       │  Active Process / Kernel     │  │
+│  │  [60% Width]                   │  [Stacked 40% Width]         │  │
+│  └────────────────────────────────┴──────────────────────────────┘  │
 │                     ← agui_state JSON per step                      │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
@@ -71,7 +71,7 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │                                                                      │
 │  ┌───────────────────────────────────────────────────────────────┐   │
 │  │  Procedural Generator: 3 typologies × 3 difficulties         │   │
-│  │  Unique entity IDs per episode → anti-memorization           │   │
+│  │  Adversary Agent: LLM generates evasive, complex graphs      │   │
 │  └───────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
@@ -174,11 +174,11 @@ python demo_eval.py --model checkpoints/best
 
 | Domain Tools (9) | OS-Mechanic Tools (6) |
 |:---|:---|
-| `review_alert` — Alert details | `write_to_case_file` — Page to disk (+0.10) |
+| `review_alert` — Alert details | `write_to_case_file` — Page to disk (+0.10, cap 3) |
 | `get_customer_profile` — KYC data | `request_wire_trace` — Async job (2-4 step ETA) |
 | `query_transactions` — Transaction history | `retrieve_async_result` — Fetch completed job |
 | `check_watchlist` — OFAC/PEP/UN screening | `search_compliance_manual` — Find AML rules |
-| `trace_network` — Entity connections | `update_system_prompt` — Kernel inject (+0.15) |
+| `trace_network` — Entity connections | `update_system_prompt` — Kernel inject (+0.15, cap 2) |
 | `check_source_of_funds` — Source verification | |
 | `check_market_price` — Trade price comparison | |
 | `assess_risk` — Risk scoring | |
@@ -197,8 +197,10 @@ python demo_eval.py --model checkpoints/best
 | Unique tool | +0.03 | — |
 | Page fault | -0.05 | Virtual Memory |
 | Async timeout | -0.10 | Interrupts |
-| Disk write | +0.10 | Virtual Memory |
-| Kernel injection | +0.15 | Kernel Update |
+| Disk write | +0.10 | Virtual Memory (Hard cap: 3/episode) |
+| Kernel injection | +0.15 | Kernel Update (Hard cap: 2/episode) |
+
+*Note: Reward farming is prevented via hard caps. After the cap is reached, the agent no longer receives the bonus but still pays the -0.02 action cost.*
 
 **Terminal** (composite score → [-1.0, +1.0]):
 
@@ -232,6 +234,7 @@ python demo_eval.py --model checkpoints/best
 ├── train_ppo.py                 # PPO trainer (T4, 8B)
 ├── train_ppo_70b.py             # PPO trainer (A100 cluster, 70B)
 ├── train_dpo.py                 # DPO continuous learning (offline)
+├── train_adversary.py           # GAN-style adversarial battle loop (SQLite)
 ├── hotswap.py                   # Zero-downtime LoRA adapter swap
 ├── demo_eval.py                 # 1MDB demo + AGUI replay
 ├── Dockerfile                   # HF Spaces deployment (port 7860)
@@ -239,6 +242,7 @@ python demo_eval.py --model checkpoints/best
 ├── .hfignore                    # Exclude patterns for openenv push
 ├── scenarios/
 │   ├── procedural_generator.py  # POMDP graph builder
+│   ├── adversary_agent.py       # LLM-backed evasive scenario generator
 │   ├── compliance_manual.py     # Searchable rule corpus
 │   └── base.py                  # Scenario ABC
 ├── graders/

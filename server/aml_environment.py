@@ -263,6 +263,14 @@ class AMLEnvironment(Environment):
             done = False
             flags = {}
 
+        # --- Reward Farming Hard Caps ---
+        # Suppress bonus rewards once per-episode limits are reached.
+        # The agent still pays ACTION_COST (-0.02) for each call.
+        if is_successful_page and self._state.disk_write_reward_count >= 3:
+            is_successful_page = False  # No more +0.10 bonus
+        if is_meta_injection and self._state.kernel_inject_reward_count >= 2:
+            is_meta_injection = False  # No more +0.15 bonus
+
         # Compute step reward with all OS mechanic flags
         step_reward = self._grader.grade_step(
             tool, params, self._state, call_hash,
@@ -282,8 +290,10 @@ class AMLEnvironment(Environment):
             self._state.async_timeout_count += 1
         if is_successful_page:
             self._state.successful_pages += 1
+            self._state.disk_write_reward_count += 1  # Track rewarded writes
         if is_meta_injection:
             self._state.meta_injections += 1
+            self._state.kernel_inject_reward_count += 1  # Track rewarded injections
 
         # --- OS Mechanic: Push observation summary into RAM ---
         obs_summary = f"Step {self._state.step_count} [{tool}]: {message}"

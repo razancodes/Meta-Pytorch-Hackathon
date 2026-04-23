@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS — Page Layout Styles
+   MEMEX — Page Layout Styles
    ═══════════════════════════════════════════════════════════════ */
 
 .app {
@@ -8,7 +8,7 @@
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: #000;
+  background: var(--nx-black);
 }
 
 /* ── Header ───────────────────────────────── */
@@ -18,8 +18,8 @@
   justify-content: space-between;
   height: 40px;
   padding: 0 16px;
-  background: #0A0A0A;
-  border-bottom: 1px solid #1A1A1A;
+  background: var(--nx-surface);
+  border-bottom: 1px solid var(--nx-border);
   flex-shrink: 0;
   z-index: 100;
 }
@@ -31,13 +31,13 @@
 }
 
 .headerSep {
-  color: #1A1A1A;
+  color: var(--nx-border);
   font-size: 16px;
 }
 
 .headerSubtitle {
   font-size: 9px;
-  color: #404040;
+  color: var(--nx-muted);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-weight: 500;
@@ -119,8 +119,8 @@
   justify-content: center;
   width: 100%;
   height: 100%;
-  background: #000;
-  color: #404040;
+  background: var(--nx-black);
+  color: var(--nx-muted);
   font-size: 12px;
   letter-spacing: 0.06em;
 }

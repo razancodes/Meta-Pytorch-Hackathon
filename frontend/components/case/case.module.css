@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS — Case Intelligence Terminal Styles
+   MEMEX — Case Intelligence Terminal Styles
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── Container & Top Bar ──────────────────── */
@@ -8,7 +8,7 @@
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: #000;
+  background: var(--nx-black);
   animation: nx-fade-in 0.6s ease;
 }
 
@@ -17,8 +17,8 @@
   align-items: center;
   gap: 16px;
   padding: 8px 16px;
-  background: #0A0A0A;
-  border-bottom: 1px solid #1A1A1A;
+  background: var(--nx-surface);
+  border-bottom: 1px solid var(--nx-border);
   flex-shrink: 0;
   height: 44px;
 }
@@ -34,19 +34,19 @@
 .caseId {
   font-size: 11px;
   font-weight: 700;
-  color: #EA580C;
+  color: var(--nx-orange);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 .caseSep {
-  color: #1A1A1A;
+  color: var(--nx-border);
   font-size: 14px;
 }
 
 .caseSummary {
   font-size: 10px;
-  color: #737373;
+  color: var(--nx-text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -61,11 +61,11 @@
 .caseStep {
   font-size: 14px;
   font-weight: 700;
-  color: #D4D4D4;
+  color: var(--nx-text);
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Three-Panel Layout ───────────────────── */
+/* ── Two-Panel Layout ────────────────────── */
 .panelLayout {
   display: flex;
   flex: 1;
@@ -79,6 +79,63 @@
   min-width: 0;
 }
 
+/* Panel header bar (shared for fullscreen toggle) */
+.panelHeaderBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--nx-border);
+  background: var(--nx-surface-alt);
+  flex-shrink: 0;
+  min-height: 32px;
+}
+
+.panelHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Right Stack (Env + Terminal) ─────────── */
+.rightStack {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.rightStackPanel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--nx-border);
+}
+
+.rightStackPanel:last-child {
+  border-bottom: none;
+}
+
+.rightStackContent {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ── Fullscreen Overlay ───────────────────── */
+.fullscreenOverlay {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9999 !important;
+  background: var(--nx-black) !important;
+  animation: nx-fade-in 0.25s ease;
+}
+
 /* ── Environment State Panel (Left) ───────── */
 .envPanel {
   display: flex;
@@ -87,7 +144,7 @@
   padding: 4px;
   height: 100%;
   overflow-y: auto;
-  background: #000;
+  background: var(--nx-black);
 }
 
 .envEmpty {
@@ -96,7 +153,7 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #404040;
+  color: var(--nx-muted);
   font-size: 11px;
   gap: 8px;
 }
@@ -113,7 +170,7 @@
 /* RAM */
 .ramBar {
   height: 4px;
-  background: #1A1A1A;
+  background: var(--nx-border);
   border-radius: 2px;
   overflow: hidden;
   margin-bottom: 8px;
@@ -133,8 +190,8 @@
 
 .ramSlot {
   padding: 6px 8px;
-  background: #0F0F0F;
-  border: 1px solid #1A1A1A;
+  background: var(--nx-surface-alt);
+  border: 1px solid var(--nx-border);
   border-radius: 2px;
 }
 
@@ -145,7 +202,7 @@
 
 .ramSlotLabel {
   font-size: 8px;
-  color: #404040;
+  color: var(--nx-muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   display: block;
@@ -154,7 +211,7 @@
 
 .ramSlotText {
   font-size: 9px;
-  color: #737373;
+  color: var(--nx-text-dim);
   line-height: 1.4;
   word-break: break-word;
 }
@@ -167,27 +224,27 @@
 
 .diskEmpty {
   font-size: 10px;
-  color: #404040;
+  color: var(--nx-muted);
 }
 
 .diskEntry {
   display: flex;
   gap: 6px;
   padding: 4px 0;
-  border-bottom: 1px solid #0F0F0F;
+  border-bottom: 1px solid var(--nx-surface-alt);
   animation: nx-highlight-flash 1s ease-out;
 }
 
 .diskIndex {
   font-size: 9px;
-  color: #22C55E;
+  color: var(--nx-green);
   flex-shrink: 0;
   min-width: 16px;
 }
 
 .diskText {
   font-size: 10px;
-  color: #D4D4D4;
+  color: var(--nx-text);
   line-height: 1.4;
 }
 
@@ -201,13 +258,13 @@
 }
 
 .asyncId {
-  color: #EA580C;
+  color: var(--nx-orange);
   font-weight: 600;
   min-width: 60px;
 }
 
 .asyncTool {
-  color: #737373;
+  color: var(--nx-text-dim);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -228,7 +285,7 @@
 }
 
 .kernelText {
-  color: #D4D4D4;
+  color: var(--nx-text);
   line-height: 1.4;
 }
 
@@ -258,32 +315,30 @@
 /* Progress */
 .progressBar {
   height: 4px;
-  background: #1A1A1A;
+  background: var(--nx-border);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .progressFill {
   height: 100%;
-  background: #EA580C;
+  background: var(--nx-orange);
   border-radius: 2px;
   transition: width 0.4s ease;
 }
 
-/* ── Entity Graph (Center) ────────────────── */
+/* ── Entity Graph (Left, wide) ───────────── */
 .graphContainer {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: #000;
+  background-color: var(--nx-black);
   background-image: 
-    radial-gradient(circle at 50% 50%, rgba(234, 88, 12, 0.05) 0%, transparent 60%),
-    linear-gradient(rgba(26, 26, 26, 0.5) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(26, 26, 26, 0.5) 1px, transparent 1px);
+    radial-gradient(circle at 50% 50%, rgba(234, 88, 12, 0.04) 0%, transparent 60%),
+    linear-gradient(rgba(42, 42, 45, 0.4) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(42, 42, 45, 0.4) 1px, transparent 1px);
   background-size: 100% 100%, 20px 20px, 20px 20px;
   background-position: center center;
-  border-left: 1px solid #1A1A1A;
-  border-right: 1px solid #1A1A1A;
   position: relative;
 }
 
@@ -295,8 +350,8 @@
 .graphTooltip {
   position: absolute;
   z-index: 100;
-  background: rgba(10, 10, 10, 0.95);
-  border: 1px solid #1A1A1A;
+  background: rgba(28, 28, 31, 0.95);
+  border: 1px solid var(--nx-border);
   border-radius: 2px;
   padding: 10px 12px;
   min-width: 160px;
@@ -320,7 +375,7 @@
 
 .ttType {
   font-size: 9px;
-  color: #404040;
+  color: var(--nx-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -334,7 +389,7 @@
 .ttName {
   font-size: 12px;
   font-weight: 600;
-  color: #EEEEEE;
+  color: var(--nx-text-bright);
   margin-bottom: 4px;
 }
 
@@ -342,20 +397,20 @@
   display: flex;
   justify-content: space-between;
   font-size: 10px;
-  color: #737373;
+  color: var(--nx-text-dim);
   padding: 2px 0;
 }
 
 .ttRow span:last-child {
-  color: #D4D4D4;
+  color: var(--nx-text);
 }
 
 .ttFlag {
   font-size: 9px;
-  color: #E11D48;
+  color: var(--nx-red);
   margin-top: 4px;
   padding-top: 4px;
-  border-top: 1px solid #1A1A1A;
+  border-top: 1px solid var(--nx-border);
 }
 
 /* Detail Tray */
@@ -365,8 +420,8 @@
   top: 32px;
   bottom: 0;
   width: 240px;
-  background: rgba(10, 10, 10, 0.97);
-  border-left: 1px solid #1A1A1A;
+  background: rgba(28, 28, 31, 0.97);
+  border-left: 1px solid var(--nx-border);
   z-index: 50;
   animation: slideInRight 0.3s ease;
   display: flex;
@@ -384,13 +439,13 @@
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  border-bottom: 1px solid #1A1A1A;
+  border-bottom: 1px solid var(--nx-border);
 }
 
 .detailTitle {
   font-size: 12px;
   font-weight: 700;
-  color: #EEEEEE;
+  color: var(--nx-text-bright);
 }
 
 .detailBody {
@@ -404,24 +459,24 @@
   display: flex;
   justify-content: space-between;
   font-size: 11px;
-  color: #D4D4D4;
+  color: var(--nx-text);
 }
 
 .detailFlag {
   font-size: 10px;
-  color: #E11D48;
+  color: var(--nx-red);
   padding: 6px 8px;
-  background: rgba(225, 29, 72, 0.08);
-  border: 1px solid rgba(225, 29, 72, 0.2);
+  background: rgba(212, 51, 74, 0.08);
+  border: 1px solid rgba(212, 51, 74, 0.2);
   border-radius: 2px;
 }
 
-/* ── Agent Terminal (Right) ───────────────── */
+/* ── Agent Terminal (Right, stacked) ─────── */
 .terminalContainer {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #000;
+  background: var(--nx-black);
 }
 
 .terminalBody {
@@ -433,13 +488,13 @@
 .termEntry {
   padding: 8px;
   margin-bottom: 4px;
-  border: 1px solid #0F0F0F;
+  border: 1px solid var(--nx-surface-alt);
   border-radius: 2px;
-  background: #050505;
+  background: var(--nx-surface);
 }
 
 .termEntryFinal {
-  border-color: #22C55E;
+  border-color: var(--nx-green);
   background: rgba(34, 197, 94, 0.03);
 }
 
@@ -453,7 +508,7 @@
 .termStepNum {
   font-size: 9px;
   font-weight: 700;
-  color: #EA580C;
+  color: var(--nx-orange);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -467,14 +522,14 @@
 .termReasoning {
   margin-bottom: 6px;
   padding: 4px 6px;
-  background: #0A0A0A;
-  border-left: 2px solid #EA580C;
+  background: var(--nx-surface-alt);
+  border-left: 2px solid var(--nx-orange);
   border-radius: 0 2px 2px 0;
 }
 
 .termReasonLabel {
   font-size: 8px;
-  color: #404040;
+  color: var(--nx-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   display: block;
@@ -483,7 +538,7 @@
 
 .termReasonText {
   font-size: 10px;
-  color: #D4D4D4;
+  color: var(--nx-text);
   line-height: 1.4;
   margin: 0;
 }
@@ -497,20 +552,20 @@
 
 .termPS1 {
   font-size: 10px;
-  color: #22C55E;
+  color: var(--nx-green);
   flex-shrink: 0;
 }
 
 .termCmd {
   font-size: 11px;
-  color: #EEEEEE;
+  color: var(--nx-text-bright);
   font-weight: 600;
 }
 
 .termParams {
   padding: 4px 8px;
   margin: 2px 0 4px 0;
-  background: #0A0A0A;
+  background: var(--nx-surface-alt);
   border-radius: 2px;
 }
 
@@ -522,18 +577,18 @@
 }
 
 .termParamKey {
-  color: #06B6D4;
+  color: var(--nx-cyan);
   flex-shrink: 0;
 }
 
 .termParamVal {
-  color: #737373;
+  color: var(--nx-text-dim);
   word-break: break-all;
 }
 
 .termOutput {
   font-size: 10px;
-  color: #737373;
+  color: var(--nx-text-dim);
   line-height: 1.4;
   padding-left: 2px;
 }
@@ -546,7 +601,7 @@
   border-radius: 2px;
   font-size: 10px;
   font-weight: 700;
-  color: #22C55E;
+  color: var(--nx-green);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -564,7 +619,7 @@
 }
 
 .termBlink {
-  color: #22C55E;
+  color: var(--nx-green);
   animation: blink 1s step-end infinite;
 }
 

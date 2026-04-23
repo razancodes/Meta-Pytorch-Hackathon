@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// NEXUS — Replay Engine & Mock Data
+// MEMEX — Replay Engine & Mock Data
 // ═══════════════════════════════════════════════════════════════
 
 import { ReplayStep, EpisodeMeta, AGUIState } from './types';

@@ -44,7 +44,7 @@ export default function AgentTerminal({ steps }: Props) {
         {/* Initial prompt */}
         <div className={styles.termEntry}>
           <div className={styles.termPrompt}>
-            <span className={styles.termPS1}>nexus@case:~$</span>
+            <span className={styles.termPS1}>memex@case:~$</span>
             <span className={styles.termCmd}>init_investigation</span>
           </div>
           <div className={styles.termOutput}>&gt; Environment loaded. Awaiting agent actions.</div>
@@ -54,7 +54,7 @@ export default function AgentTerminal({ steps }: Props) {
         {steps.map((step) => {
           const icon = TOOL_ICONS[step.action.tool] || '▸';
           const reward = step.observation.reward ?? 0;
-          const rewardColor = reward >= 0.05 ? '#22C55E' : reward < 0 ? '#E11D48' : '#737373';
+          const rewardColor = reward >= 0.05 ? '#22C55E' : reward < 0 ? '#D4334A' : '#505055';
 
           return (
             <div
@@ -79,7 +79,7 @@ export default function AgentTerminal({ steps }: Props) {
 
               {/* Tool call */}
               <div className={styles.termPrompt}>
-                <span className={styles.termPS1}>nexus@case:~$</span>
+                <span className={styles.termPS1}>memex@case:~$</span>
                 <span className={styles.termCmd}>
                   {icon} {step.action.tool}
                 </span>
@@ -117,7 +117,7 @@ export default function AgentTerminal({ steps }: Props) {
 
         {/* Cursor blink */}
         <div className={styles.termCursor}>
-          <span className={styles.termPS1}>nexus@case:~$</span>
+          <span className={styles.termPS1}>memex@case:~$</span>
           <span className={styles.termBlink}>█</span>
         </div>
       </div>

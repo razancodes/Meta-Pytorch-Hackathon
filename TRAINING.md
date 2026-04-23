@@ -267,10 +267,13 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 | `train_ppo.py` | Step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
 | `train_ppo_70b.py` | Multi-GPU PPO (DeepSpeed ZeRO-3, A100 cluster) |
 | `train_dpo.py` | Offline DPO trainer (continuous learning from user corrections) |
+| `train_adversary.py` | GAN-style adversarial battle loop for generating DPO scenarios |
 | `hotswap.py` | Zero-downtime LoRA adapter hot-swap utility |
 | `demo_eval.py` | 1MDB demo with AGUI replay capture |
 | `server/aml_environment.py` | Core environment (15 tools + OS mechanics) |
 | `scenarios/procedural_generator.py` | Procedural POMDP scenario builder |
+| `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator |
+| `adversarial_successes.db` | SQLite database storing failed scenarios for DPO |
 | `graders/grader.py` | Dense reward engine (per-step + terminal) |
 | `state_manager.py` | OS mechanics (RAM, Disk, Async Queue, Kernel) |
 | `models.py` | Pydantic type definitions |
@@ -280,6 +283,26 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 | `demo_output/` | AGUI JSON payloads for frontend replay |
 | `frontend/prisma/schema.prisma` | Prisma schema for DPO preference pairs |
 | `frontend/app/api/preferences/` | Next.js API for capturing user corrections |
+
+---
+
+## Adversarial "GAN-Style" Training Loop
+
+To generate challenging negative examples for the DPO pipeline, Memex includes an adversarial scenario generator that plays the role of a "money launderer" attempting to evade the Defender agent.
+
+### Setup
+
+```bash
+# Run the battle orchestrator (generates scenarios and tests them against the Defender)
+python train_adversary.py --adversary-model gpt-4o-mini --episodes 20 --difficulty hard
+```
+
+### Workflow
+
+1. **Adversary Generation:** `adversary_agent.py` uses an LLM (or procedural fallback) to generate complex, evasive transaction graphs (e.g., mule rings, shell company pass-throughs, phantom invoices).
+2. **Defender Evaluation:** The Defender runs the investigation against the generated scenario.
+3. **Persistence:** If the Defender fails (score < threshold), the scenario is recorded in `adversarial_successes.db` (SQLite).
+4. **Continuous Learning:** These evasive scenarios are then used as high-value negative examples in the DPO pipeline to harden the agent against new ML typologies.
 
 ---
 
