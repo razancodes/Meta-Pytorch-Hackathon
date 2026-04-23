@@ -29,38 +29,43 @@ export default function ReplayControls({
 
   return (
     <div className={styles.replayBar}>
-      <button className={styles.replayBtn} onClick={onStepBack} title="Step Back">◄</button>
-      <button
-        className={`${styles.replayBtn} ${isPlaying ? styles.replayBtnActive : ''}`}
-        onClick={isPlaying ? onPause : onPlay}
-        title={isPlaying ? 'Pause' : 'Play'}
-      >
-        {isPlaying ? '⏸' : '▶'}
-      </button>
-      <button className={styles.replayBtn} onClick={onStepForward} title="Step Forward">►</button>
+      <div className={styles.replayGroup}>
+        {speeds.map(s => (
+          <button
+            key={s}
+            className={`${styles.replayBtn} ${speed === s ? styles.replayBtnActive : ''}`}
+            onClick={() => onSpeedChange(s)}
+          >
+            {s}x
+          </button>
+        ))}
+      </div>
 
-      <input
-        type="range"
-        className={styles.replayScrubber}
-        min={0}
-        max={Math.max(totalSteps - 1, 0)}
-        value={currentStep}
-        onChange={e => onSeek(parseInt(e.target.value))}
-      />
-
-      <span className={styles.replayStep}>
-        {String(currentStep + 1).padStart(2, '0')}/{String(totalSteps).padStart(2, '0')}
-      </span>
-
-      {speeds.map(s => (
+      <div className={styles.replayGroupCenter}>
+        <button className={styles.replayBtn} onClick={onStepBack} title="Step Back">◄</button>
         <button
-          key={s}
-          className={`${styles.replayBtn} ${speed === s ? styles.replayBtnActive : ''}`}
-          onClick={() => onSpeedChange(s)}
+          className={`${styles.replayBtn} ${isPlaying ? styles.replayBtnActive : ''} ${styles.replayPlayBtn}`}
+          onClick={isPlaying ? onPause : onPlay}
+          title={isPlaying ? 'Pause' : 'Play'}
         >
-          {s}x
+          {isPlaying ? '⏸' : '▶'}
         </button>
-      ))}
+        <button className={styles.replayBtn} onClick={onStepForward} title="Step Forward">►</button>
+      </div>
+
+      <div className={styles.replayGroupRight}>
+        <span className={styles.replayStep}>
+          {String(currentStep + 1).padStart(2, '0')}/{String(totalSteps).padStart(2, '0')}
+        </span>
+        <input
+          type="range"
+          className={styles.replayScrubber}
+          min={0}
+          max={Math.max(totalSteps - 1, 0)}
+          value={currentStep}
+          onChange={e => onSeek(parseInt(e.target.value))}
+        />
+      </div>
     </div>
   );
 }

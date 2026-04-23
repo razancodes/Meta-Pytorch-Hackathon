@@ -12,17 +12,34 @@
   flex-shrink: 0;
 }
 
-.statusGreen { background: var(--nx-green); }
-.statusAmber { background: var(--nx-yellow); }
-.statusRed   { background: var(--nx-red); }
+.statusGreen {
+  background: var(--nx-green);
+}
+
+.statusAmber {
+  background: var(--nx-yellow);
+}
+
+.statusRed {
+  background: var(--nx-red);
+}
 
 .statusPulse {
   animation: statusPulseAnim 2s ease-in-out infinite;
 }
 
 @keyframes statusPulseAnim {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
-  50% { opacity: 0.6; box-shadow: 0 0 6px 2px currentColor; }
+
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 6px 2px currentColor;
+  }
 }
 
 .statusLabel {
@@ -36,11 +53,37 @@
 .replayBar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 6px 12px;
   background: var(--nx-surface);
   border: 1px solid var(--nx-border);
   border-radius: 2px;
+  width: 100%;
+  max-width: 600px;
+}
+
+.replayGroup,
+.replayGroupCenter,
+.replayGroupRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.replayGroup {
+  flex: 1;
+  /* Match the space taken by scrubber so center is geometrically true */
+}
+
+.replayGroupCenter {
+  gap: 12px;
+  justify-content: center;
+}
+
+.replayGroupRight {
+  flex: 1;
+  justify-content: flex-end;
 }
 
 .replayBtn {
@@ -68,8 +111,14 @@
   background: var(--nx-orange-glow2);
 }
 
+.replayPlayBtn {
+  font-size: 14px;
+  padding: 4px 12px;
+}
+
 .replayScrubber {
-  flex: 1;
+  width: 120px;
+  /* Don't flex 1 here, let it be fixed size so it looks neat */
   height: 3px;
   appearance: none;
   background: var(--nx-border);
@@ -92,5 +141,5 @@
   color: var(--nx-text-dim);
   font-variant-numeric: tabular-nums;
   min-width: 48px;
-  text-align: center;
+  text-align: right;
 }

@@ -104,7 +104,7 @@ export default function EntityGraph({ graphData }: Props) {
               'shape': (ele: any) => NODE_SHAPES[ele.data('type')] || 'ellipse',
               'color': '#D4D4D4',
               'font-size': '9px',
-              'font-family': '"JetBrains Mono", monospace',
+              'font-family': 'JetBrains Mono, monospace',
               'text-valign': 'bottom',
               'text-margin-y': 6,
               'text-outline-width': 4,

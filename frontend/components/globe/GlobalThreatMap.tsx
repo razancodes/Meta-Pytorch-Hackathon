@@ -138,13 +138,10 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
       const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svgEl.setAttribute('class', styles.arcOverlay);
       svgEl.style.position = 'absolute';
-      svgEl.style.top = '0';
-      svgEl.style.left = '0';
-      svgEl.style.width = '100%';
-      svgEl.style.height = '100%';
+      svgEl.style.overflow = 'visible';
       svgEl.style.pointerEvents = 'none';
       svgEl.style.zIndex = '400';
-      map.getContainer().appendChild(svgEl);
+      map.getPanes().overlayPane.appendChild(svgEl);
       svgOverlay.current = svgEl;
 
       // Pre-create glow filter defs
@@ -200,8 +197,7 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
       const drawArcs = () => {
         if (!svgOverlay.current || !mapInstance.current) return;
         const svg = svgOverlay.current;
-        const mapSize = mapInstance.current.getSize();
-        svg.setAttribute('viewBox', `0 0 ${mapSize.x} ${mapSize.y}`);
+        // Don't need viewBox because the svg is simply a container with overflow:visible in the overlayPane
 
         const defsEl = svg.querySelector('defs');
         while (svg.lastChild && svg.lastChild !== defsEl) {
@@ -213,8 +209,8 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
           const tgt = getHubById(corridor.target);
           if (!src || !tgt) return;
 
-          const p1 = mapInstance.current!.latLngToContainerPoint([src.lat, src.lng]);
-          const p2 = mapInstance.current!.latLngToContainerPoint([tgt.lat, tgt.lng]);
+          const p1 = mapInstance.current!.latLngToLayerPoint([src.lat, src.lng]);
+          const p2 = mapInstance.current!.latLngToLayerPoint([tgt.lat, tgt.lng]);
 
           const midX = (p1.x + p2.x) / 2;
           const midY = (p1.y + p2.y) / 2;
@@ -278,10 +274,10 @@ export default function GlobalThreatMap({ onCorridorSelect, onHubSelect }: Props
         rafId.current = requestAnimationFrame(drawArcs);
       };
 
-      map.on('move', scheduleRedraw);
-      map.on('zoom', scheduleRedraw);
-      map.on('moveend', scheduleRedraw);
+      // Since the SVG is in the overlay pane, it will naturally pan and zoom!
+      // We only need to redraw when the scale changes significantly, or layout changes
       map.on('zoomend', scheduleRedraw);
+      map.on('moveend', scheduleRedraw);
       setTimeout(drawArcs, 200);
       setMapReady(true);
     };

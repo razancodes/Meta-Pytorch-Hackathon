@@ -28,6 +28,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1;
 }
 
 .headerSep {
@@ -44,7 +45,6 @@
 }
 
 .headerCenter {
-  flex: 1;
   display: flex;
   justify-content: center;
   padding: 0 20px;
@@ -53,7 +53,9 @@
 .headerRight {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 12px;
+  flex: 1;
 }
 
 /* ── Main Content ─────────────────────────── */
@@ -86,13 +88,23 @@
 }
 
 @keyframes pageFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes pageFadeOut {
-  from { opacity: 1; }
-  to { opacity: 0; }
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
 }
 
 @keyframes pageSlideIn {
@@ -101,10 +113,12 @@
     transform: scale(1.05);
     filter: brightness(2);
   }
+
   30% {
     opacity: 1;
     filter: brightness(1.5);
   }
+
   to {
     opacity: 1;
     transform: scale(1);
