@@ -1,0 +1,54 @@
+# Patterns to exclude from HF Space uploads.
+# Used by: openenv push --exclude .hfignore
+# Also read by: huggingface_hub upload_folder/upload_large_folder
+
+# Python environments
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Node / Frontend build artifacts (not needed for the env server)
+node_modules/
+.next/
+.turbo/
+frontend/
+
+# Training artifacts
+checkpoints/
+checkpoints_70b/
+outputs/
+demo_output/
+wandb/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Git
+.git/
+
+# Secrets
+*.pem
+*.key
+.env.local
+secrets/
+.secret
+
+# Gemini / AI
+.gemini/
+
+# Logs
+*.log
+server.log
+
+# Large binary patterns
+*.so
+*.node
+*.wasm
+*.exe
