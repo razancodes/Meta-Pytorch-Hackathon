@@ -19,6 +19,9 @@ class BaseScenario(ABC):
     - source_of_funds        : dict  — transaction_id -> source verification result
     - ground_truth           : dict  — correct_decision, typology, key_entities, key_findings
     - market_data            : dict  — commodity -> {unit_price, currency} (optional)
+    - device_fingerprints    : dict  — entity_id -> list of DeviceFingerprint dicts
+    - customs_invoices       : dict  — invoice_id -> CustomsInvoice dict
+    - beneficial_ownership   : dict  — entity_id -> list of BeneficialOwnerNode dicts
     """
 
     # ------------------------------------------------------------------ #
@@ -64,15 +67,41 @@ class BaseScenario(ABC):
         - typology         : str
         - key_entities     : List[str]
         - key_findings     : List[str]
+        - ubo_entity_id    : Optional[str]  (Phase 3)
+        - red_flags        : List[str]       (Phase 3)
         """
 
     # ------------------------------------------------------------------ #
-    # Optional helpers                                                     #
+    # Optional / Phase 3 properties                                        #
     # ------------------------------------------------------------------ #
 
     @property
     def market_data(self) -> Dict[str, Any]:
         """Optional commodity market price data. Override in subclass."""
+        return {}
+
+    @property
+    def device_fingerprints(self) -> Dict[str, Any]:
+        """Mapping of entity_id -> list of device fingerprint dicts.
+
+        Used for Pillar 1: Device Fingerprinting / Mule-Ring Detection.
+        """
+        return {}
+
+    @property
+    def customs_invoices(self) -> Dict[str, Any]:
+        """Mapping of invoice_id -> customs invoice dict.
+
+        Used for Pillar 2: Trade-Based ML / Phantom Shipment Detection.
+        """
+        return {}
+
+    @property
+    def beneficial_ownership(self) -> Dict[str, Any]:
+        """Mapping of entity_id -> list of beneficial owner node dicts.
+
+        Used for Pillar 4: Deep Graph Proximity / UBO Tracing.
+        """
         return {}
 
     def get_transactions_for(
@@ -83,7 +112,11 @@ class BaseScenario(ABC):
         min_amount: float | None = None,
         max_amount: float | None = None,
     ) -> List[Dict[str, Any]]:
-        """Return transactions matching the given filters."""
+        """Return transactions matching the given filters.
+
+        Phase 3: Results are sorted chronologically (ascending) to support
+        velocity analysis. Timestamps are included when available.
+        """
         results = []
         for tx in self.transactions:
             # Customer filter
@@ -105,4 +138,7 @@ class BaseScenario(ABC):
             if max_amount is not None and amount > max_amount:
                 continue
             results.append(tx)
+
+        # Sort chronologically for velocity analysis
+        results.sort(key=lambda t: (t.get("date", ""), t.get("timestamp", "")))
         return results

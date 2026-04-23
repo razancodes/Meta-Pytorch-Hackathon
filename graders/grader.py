@@ -66,6 +66,10 @@ ALIASES: Dict[str, List[str]] = {
     "unexplained_funds": ["unexplained", "unknown_source", "unjustified_funds"],
     "multiple_sub_threshold_deposits": ["multiple_deposits", "structuring", "sub_threshold", "below_threshold"],
     "no_cash_intensive_occupation": ["no_cash_business", "non_cash_occupation", "clerk", "office"],
+    # Phase 3: FinCEN 4-pillar aliases
+    "shared_device_fingerprint": ["device_overlap", "shared_device", "mule_ring", "device_fingerprint"],
+    "ip_jurisdiction_mismatch": ["vpn", "ip_mismatch", "geo_mismatch", "jurisdiction_mismatch"],
+    "phantom_shipment": ["phantom", "zero_weight", "no_bill_of_lading", "missing_bol"],
 }
 
 
@@ -125,36 +129,37 @@ class AMLGrader:
         typology: str,
         state: AMLState,
         optimal_steps: int = 10,
+        ubo_identified: str | None = None,
     ) -> float:
         """Compute the final episode score in [-1.0, +1.0].
 
         Args:
-            ground_truth: The scenario's ground truth dict (passed from env,
-                NOT re-generated via get_scenario).
+            ground_truth: The scenario's ground truth dict.
             decision: "file_sar" or "close_alert".
             findings: Agent-identified findings.
             entities_flagged: Agent-flagged entity IDs.
             typology: Agent-identified typology.
             state: Current AMLState with accumulated_reward.
-            optimal_steps: Expected optimal step count for this difficulty.
+            optimal_steps: Expected optimal step count.
+            ubo_identified: Phase 3 — UBO entity ID identified by agent.
         """
         gt = ground_truth
 
-        # 1. Decision correctness (weight 0.35)
+        # 1. Decision correctness (weight 0.30)
         decision_correct = decision == gt["correct_decision"]
-        decision_score = 0.35 if decision_correct else -0.50
+        decision_score = 0.30 if decision_correct else -0.50
 
         # 2. Typology correctness (weight 0.15)
         typology_score = 0.0
         if typology and typology.lower().strip() == gt.get("typology", "").lower().strip():
             typology_score = 0.15
 
-        # 3. Key findings coverage (weight 0.25)
+        # 3. Key findings coverage (weight 0.20)
         gt_findings = gt.get("key_findings", [])
         findings_score = 0.0
         if gt_findings:
             matched = self._count_findings_matched(findings, gt_findings)
-            findings_score = 0.25 * (matched / len(gt_findings))
+            findings_score = 0.20 * (matched / len(gt_findings))
 
         # 4. Entity precision/recall F1 (weight 0.15)
         gt_entities: Set[str] = set(gt.get("key_entities", []))
@@ -171,7 +176,28 @@ class AMLGrader:
             f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
             entity_score = 0.15 * f1
 
-        # 5. Efficiency (weight 0.10)
+        # 5. UBO identification (weight 0.05) — Phase 3
+        ubo_score = 0.0
+        gt_ubo = gt.get("ubo_entity_id")
+        if gt_ubo and ubo_identified:
+            ubo_norm = str(ubo_identified).lower().strip()
+            gt_ubo_norm = str(gt_ubo).lower().strip()
+            if ubo_norm == gt_ubo_norm:
+                ubo_score = 0.05
+            else:
+                ubo_score = -0.03  # Penalty for wrong UBO
+
+        # 6. Phase 3 pillar tool usage bonus (weight 0.05)
+        pillar_score = 0.0
+        pillar_checks = [
+            getattr(state, "device_overlap_checked", False),
+            getattr(state, "customs_invoice_verified", False),
+            getattr(state, "beneficial_ownership_queried", False),
+        ]
+        pillar_used = sum(1 for c in pillar_checks if c)
+        pillar_score = 0.05 * (pillar_used / 3.0)
+
+        # 7. Efficiency (weight 0.10)
         step_count = state.step_count
         if step_count <= optimal_steps:
             efficiency = 1.0
@@ -180,7 +206,10 @@ class AMLGrader:
         efficiency_score = 0.10 * efficiency
 
         # Composite
-        terminal_score = decision_score + typology_score + findings_score + entity_score + efficiency_score
+        terminal_score = (
+            decision_score + typology_score + findings_score
+            + entity_score + ubo_score + pillar_score + efficiency_score
+        )
 
         # Add accumulated step rewards (micro-rewards from OS mechanics)
         total = terminal_score + state.accumulated_reward

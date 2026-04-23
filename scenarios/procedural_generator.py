@@ -93,6 +93,45 @@ _ADDRESSES = [
     "10 Raffles Place, Singapore 048619",
 ]
 
+# Phase 3: Device / Geo pools
+_IP_POOLS_CLEAN = [
+    "192.168.1.{}", "10.0.0.{}", "172.16.0.{}",
+    "203.0.113.{}", "198.51.100.{}",
+]
+_IP_POOLS_VPN = [
+    "185.220.101.{}", "104.244.76.{}", "45.153.160.{}",  # known VPN/proxy ranges
+    "91.219.237.{}", "178.17.170.{}",
+]
+_DEVICE_PREFIXES = ["DEV", "MOB", "TAB", "POS", "ATM", "WEB"]
+
+_GEO_COORDS = {
+    "New York, USA": (40.7128, -74.0060),
+    "London, UK": (51.5074, -0.1278),
+    "Singapore": (1.3521, 103.8198),
+    "Hong Kong": (22.3193, 114.1694),
+    "Dubai, UAE": (25.2048, 55.2708),
+    "Zurich, Switzerland": (47.3769, 8.5417),
+    "Panama City, Panama": (8.9836, -79.5197),
+    "Cayman Islands": (19.3133, -81.2546),
+    "British Virgin Islands": (18.4207, -64.6400),
+    "Cyprus": (35.1264, 33.4299),
+    "Yangon, Myanmar": (16.8661, 96.1951),
+    "Tehran, Iran": (35.6892, 51.3890),
+}
+
+_HS_CODES = {
+    "machine_parts": "8483.40",
+    "electronics_components": "8542.31",
+    "textiles": "5208.11",
+    "agricultural_products": "1006.30",
+    "medical_equipment": "9018.19",
+    "automotive_parts": "8708.29",
+    "chemicals": "2901.10",
+    "precious_metals": "7108.12",
+    "scrap_metal": "7204.49",
+    "generic_goods": "9999.99",
+}
+
 _OCCUPATIONS_NON_CASH = [
     "Retail Store Clerk", "IT Support Specialist", "Office Administrator",
     "Data Entry Operator", "School Teacher", "Receptionist",
@@ -172,6 +211,94 @@ def _dates_in_window(base: datetime, count: int, window_days: int = 7) -> List[s
     return [(base + timedelta(days=i * step)).strftime("%Y-%m-%d") for i in range(count)]
 
 
+# --- Phase 3 Helpers ---
+
+def _random_ip(clean: bool = True) -> str:
+    """Generate a random IPv4 address from clean or VPN pools."""
+    pool = _IP_POOLS_CLEAN if clean else _IP_POOLS_VPN
+    return random.choice(pool).format(random.randint(1, 254))
+
+
+def _random_mac() -> str:
+    """Generate a random MAC address."""
+    return ":".join(f"{random.randint(0, 255):02x}" for _ in range(6))
+
+
+def _random_device_id(prefix: str = "") -> str:
+    """Generate a random device fingerprint ID."""
+    pfx = prefix or random.choice(_DEVICE_PREFIXES)
+    return f"{pfx}-{uuid.uuid4().hex[:12].upper()}"
+
+
+def _random_coords(jurisdiction: str = "") -> Tuple[float, float]:
+    """Return (lat, lon) for a jurisdiction, or random coords."""
+    if jurisdiction:
+        for key, coords in _GEO_COORDS.items():
+            if key.lower() in jurisdiction.lower() or jurisdiction.lower() in key.lower():
+                # Add small jitter for realism
+                return (
+                    round(coords[0] + random.uniform(-0.05, 0.05), 4),
+                    round(coords[1] + random.uniform(-0.05, 0.05), 4),
+                )
+    return (round(random.uniform(-60, 60), 4), round(random.uniform(-180, 180), 4))
+
+
+def _timestamps_in_window(
+    base: datetime, count: int, window_hours: int = 48,
+) -> List[str]:
+    """Generate `count` ISO 8601 timestamps within a window from `base`."""
+    if count <= 0:
+        return []
+    step_secs = max(60, (window_hours * 3600) // count)
+    return [
+        (base + timedelta(seconds=i * step_secs + random.randint(0, step_secs // 2)))
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        for i in range(count)
+    ]
+
+
+def _generate_device_fingerprint(
+    entity_id: str, jurisdiction: str = "", clean: bool = True,
+    shared_device_id: Optional[str] = None, shared_ip: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Generate a device fingerprint dict for an entity."""
+    lat, lon = _random_coords(jurisdiction)
+    return {
+        "device_id": shared_device_id or _random_device_id(),
+        "ip_address": shared_ip or _random_ip(clean),
+        "mac_address": _random_mac(),
+        "latitude": lat,
+        "longitude": lon,
+        "jurisdiction": jurisdiction or random.choice(_JURISDICTIONS_CLEAN),
+        "entity_id": entity_id,
+    }
+
+
+def _generate_customs_invoice(
+    invoice_id: str, transaction_id: str, commodity: str,
+    declared_value: float, weight_kg: float,
+    origin: str, destination: str,
+    shipper: str = "", consignee: str = "",
+    is_phantom: bool = False,
+) -> Dict[str, Any]:
+    """Generate a customs invoice dict."""
+    hs_code = _HS_CODES.get(commodity, _HS_CODES["generic_goods"])
+    return {
+        "invoice_id": invoice_id,
+        "transaction_id": transaction_id,
+        "hs_code": hs_code,
+        "commodity_description": commodity.replace("_", " ").title(),
+        "declared_value_usd": declared_value,
+        "shipping_weight_kg": weight_kg,
+        "origin_country": origin,
+        "destination_country": destination,
+        "shipper_name": shipper or None,
+        "consignee_name": consignee or None,
+        "bill_of_lading": f"BL-{_uid('', 6)}" if not is_phantom else None,
+        "is_phantom": is_phantom,
+    }
+
+
 # ===========================================================================
 # Generated Scenario (conforms to BaseScenario)
 # ===========================================================================
@@ -180,7 +307,7 @@ class GeneratedScenario(BaseScenario):
     """A procedurally generated scenario instance.
 
     This is a concrete BaseScenario populated from dicts rather than
-    hard-coded property methods.
+    hard-coded property methods. Supports Phase 3 data pillars.
     """
 
     def __init__(self, data: Dict[str, Any]) -> None:
@@ -217,6 +344,20 @@ class GeneratedScenario(BaseScenario):
     @property
     def market_data(self) -> Dict[str, Any]:
         return self._data.get("market_data", {})
+
+    # --- Phase 3 properties ---
+
+    @property
+    def device_fingerprints(self) -> Dict[str, Any]:
+        return self._data.get("device_fingerprints", {})
+
+    @property
+    def customs_invoices(self) -> Dict[str, Any]:
+        return self._data.get("customs_invoices", {})
+
+    @property
+    def beneficial_ownership(self) -> Dict[str, Any]:
+        return self._data.get("beneficial_ownership", {})
 
 
 # ===========================================================================
@@ -376,13 +517,15 @@ class ScenarioGenerator:
         }
 
         # --- Customer profile ---
+        account_age_days = random.randint(180, 1800)
         profiles = {
             subject_id: {
                 "customer_id": subject_id,
                 "name": subject_name,
                 "type": "individual",
                 "account_type": "Personal Checking",
-                "account_age_months": random.randint(6, 60),
+                "account_age_months": account_age_days // 30,
+                "account_age_days": account_age_days,
                 "kyc_risk_tier": "Medium",
                 "occupation": occupation,
                 "annual_income_declared": income,
@@ -392,20 +535,26 @@ class ScenarioGenerator:
                 "adverse_media": False,
                 "expected_monthly_cash": random.randint(500, 2000),
                 "business_type": None,
+                "jurisdiction": "Illinois, USA",
                 "notes": f"No prior SARs. Non-cash occupation ({occupation}). No business account.",
             },
         }
 
         # --- Transactions ---
+        # Generate timestamps for velocity analysis (Pillar 3)
+        txn_timestamps = _timestamps_in_window(epoch_start, num_deposits, window_hours=num_deposits * 18)
+
         transactions = []
         txn_ids = []
         for i, (date, amount) in enumerate(zip(deposit_dates, deposit_amounts)):
             tid = self._next_txn_id("STR")
             txn_ids.append(tid)
+            ts = txn_timestamps[i] if i < len(txn_timestamps) else None
             transactions.append({
                 "transaction_id": tid,
                 "customer_id": subject_id,
                 "date": date,
+                "timestamp": ts,
                 "type": "cash_deposit",
                 "amount": amount,
                 "currency": "USD",
@@ -458,18 +607,89 @@ class ScenarioGenerator:
             }
 
         # --- Ground truth ---
+        # --- Phase 3: Device fingerprints (Pillar 1 — Mule rings on medium/hard) ---
+        device_fingerprints: Dict[str, Any] = {}
+        mule_ring_findings: List[str] = []
+        if diff in ("medium", "hard"):
+            # Create shared device = mule ring indicator
+            shared_dev = _random_device_id("ATM")
+            shared_ip_vpn = _random_ip(clean=False)
+            # Subject uses a VPN IP from a different jurisdiction
+            device_fingerprints[subject_id] = [
+                _generate_device_fingerprint(
+                    subject_id, "Illinois, USA", clean=True,
+                ),
+                _generate_device_fingerprint(
+                    subject_id, "Cayman Islands", clean=False,
+                    shared_device_id=shared_dev, shared_ip=shared_ip_vpn,
+                ),
+            ]
+            # On hard: a second person shares the same device
+            if diff == "hard":
+                mule_id = self._next_cust_id()
+                mule_name = _random_name()
+                device_fingerprints[mule_id] = [
+                    _generate_device_fingerprint(
+                        mule_id, "Florida, USA", clean=False,
+                        shared_device_id=shared_dev, shared_ip=shared_ip_vpn,
+                    ),
+                ]
+                profiles[mule_id] = {
+                    "customer_id": mule_id,
+                    "name": mule_name,
+                    "type": "individual",
+                    "account_age_days": random.randint(30, 90),
+                    "jurisdiction": "Florida, USA",
+                    "notes": f"Recently opened account. Shares device fingerprint {shared_dev} with {subject_name}.",
+                }
+                mule_ring_findings.append("shared_device_fingerprint")
+                mule_ring_findings.append("ip_jurisdiction_mismatch")
+        else:
+            device_fingerprints[subject_id] = [
+                _generate_device_fingerprint(subject_id, "Illinois, USA", clean=True),
+            ]
+
+        # --- Phase 3: Beneficial ownership (Pillar 4 — stub for individuals) ---
+        beneficial_ownership: Dict[str, Any] = {
+            subject_id: [{
+                "entity_id": subject_id,
+                "entity_name": subject_name,
+                "entity_type": "individual",
+                "ownership_pct": 100.0,
+                "jurisdiction": "Illinois, USA",
+                "hop_count": 0,
+                "is_ubo": True,
+                "relationship": "self",
+            }],
+        }
+
+        # --- Ground truth ---
+        gt_findings = [
+            "multiple_sub_threshold_deposits",
+            "no_cash_intensive_occupation",
+            "same_branch_repeated",
+            "no_source_documentation",
+            "total_exceeds_ctr_threshold",
+        ] + mule_ring_findings
+
+        gt_red_flags = [
+            f"{num_deposits} cash deposits totalling ${total:,.2f} over {len(deposit_dates)} days",
+            f"All deposits below $10,000 CTR threshold (range: ${min(deposit_amounts):,.2f}-${max(deposit_amounts):,.2f})",
+            f"Non-cash occupation: {occupation}",
+            "No source of funds documentation",
+            f"Single branch pattern: {branch}",
+        ]
+        if mule_ring_findings:
+            gt_red_flags.append("Shared device fingerprint across accounts — potential mule ring")
+
         ground_truth = {
             "correct_decision": "file_sar",
             "typology": "structuring",
             "key_entities": [subject_id],
             "excluded_entities": [],
-            "key_findings": [
-                "multiple_sub_threshold_deposits",
-                "no_cash_intensive_occupation",
-                "same_branch_repeated",
-                "no_source_documentation",
-                "total_exceeds_ctr_threshold",
-            ],
+            "key_findings": gt_findings,
+            "red_flags": gt_red_flags,
+            "ubo_entity_id": subject_id,
         }
 
         return {
@@ -481,6 +701,9 @@ class ScenarioGenerator:
             "source_of_funds": sof,
             "ground_truth": ground_truth,
             "market_data": {},
+            "device_fingerprints": device_fingerprints,
+            "customs_invoices": {},
+            "beneficial_ownership": beneficial_ownership,
         }
 
     # ================================================================== #
@@ -793,6 +1016,79 @@ class ScenarioGenerator:
 
         # --- Ground truth ---
         key_entities = [subject_id, source_id] + [s["customer_id"] for s in shells]
+
+        # --- Phase 3: Device fingerprints (Pillar 1) ---
+        device_fingerprints: Dict[str, Any] = {}
+        device_fingerprints[subject_id] = [
+            _generate_device_fingerprint(subject_id, "Singapore", clean=True),
+        ]
+        if diff in ("medium", "hard"):
+            # Shell entities share a VPN IP — mule ring pattern
+            shared_vpn_ip = _random_ip(clean=False)
+            for s in shells:
+                jur = s.get("jurisdiction", "")
+                device_fingerprints[s["customer_id"]] = [
+                    _generate_device_fingerprint(
+                        s["customer_id"], jur, clean=False,
+                        shared_ip=shared_vpn_ip,
+                    ),
+                ]
+        else:
+            for s in shells:
+                device_fingerprints[s["customer_id"]] = [
+                    _generate_device_fingerprint(s["customer_id"], s.get("jurisdiction", ""), clean=True),
+                ]
+
+        # --- Phase 3: Beneficial ownership (Pillar 4 — multi-hop) ---
+        # UBO is the subject_director behind the hub company
+        ubo_id = subject_director
+        beneficial_ownership: Dict[str, Any] = {
+            subject_id: [
+                {
+                    "entity_id": subject_id,
+                    "entity_name": subject_name,
+                    "entity_type": "company",
+                    "ownership_pct": 100.0,
+                    "jurisdiction": "Singapore",
+                    "hop_count": 0,
+                    "is_ubo": False,
+                    "relationship": "self",
+                },
+                {
+                    "entity_id": subject_director,
+                    "entity_name": subject_director,
+                    "entity_type": "individual",
+                    "ownership_pct": 100.0,
+                    "jurisdiction": "Singapore",
+                    "hop_count": 1,
+                    "is_ubo": True,
+                    "relationship": "director",
+                },
+            ],
+        }
+        for s in shells:
+            beneficial_ownership[s["customer_id"]] = [{
+                "entity_id": s["customer_id"],
+                "entity_name": s["name"],
+                "entity_type": "company",
+                "ownership_pct": None,
+                "jurisdiction": s.get("jurisdiction", ""),
+                "hop_count": 0,
+                "is_ubo": False,
+                "relationship": "shell_entity",
+            }]
+
+        gt_red_flags = [
+            f"${inbound_amount:,.0f} inbound wire from offshore entity {source_name} ({source_jurisdiction})",
+            f"Rapid fan-out to {num_shells} shell entities within 48 hours",
+            f"Shared registered address: {shared_address}",
+            f"PEP connection: {pep_name} is director of {pep_shell['name']}",
+            "No trade documentation for any outbound transfers",
+            f"Source entity ({source_name}) recently incorporated in {source_jurisdiction}",
+        ]
+        if diff in ("medium", "hard"):
+            gt_red_flags.append("Multiple shell entities share same VPN IP address")
+
         ground_truth = {
             "correct_decision": "file_sar",
             "typology": "layering",
@@ -806,6 +1102,8 @@ class ScenarioGenerator:
                 "newly_incorporated",
                 "no_trade_documentation",
             ],
+            "red_flags": gt_red_flags,
+            "ubo_entity_id": ubo_id,
         }
 
         return {
@@ -817,6 +1115,9 @@ class ScenarioGenerator:
             "source_of_funds": sof,
             "ground_truth": ground_truth,
             "market_data": {},
+            "device_fingerprints": device_fingerprints,
+            "customs_invoices": {},
+            "beneficial_ownership": beneficial_ownership,
         }
 
     # ================================================================== #
@@ -1200,6 +1501,105 @@ class ScenarioGenerator:
             },
         }
 
+        # --- Phase 3: Customs invoices (Pillar 2 — Phantom Shipments) ---
+        customs_invoices: Dict[str, Any] = {}
+        for idx, tid in enumerate(txn_ids_supplier):
+            is_phantom = (diff == "hard" and idx >= len(txn_ids_supplier) - 2)
+            inv_id = f"CINV-{_uid('', 6)}"
+            customs_invoices[inv_id] = _generate_customs_invoice(
+                invoice_id=inv_id,
+                transaction_id=tid,
+                commodity=commodity_name,
+                declared_value=float(invoiced_price),
+                weight_kg=round(random.uniform(50, 500), 1) if not is_phantom else 0.0,
+                origin=supplier_jurisdiction,
+                destination="USA",
+                shipper=supplier_name,
+                consignee=subject_name,
+                is_phantom=is_phantom,
+            )
+
+        # --- Phase 3: Device fingerprints (Pillar 1) ---
+        device_fingerprints: Dict[str, Any] = {
+            subject_id: [
+                _generate_device_fingerprint(subject_id, "USA", clean=True),
+            ],
+            supplier_id: [
+                _generate_device_fingerprint(supplier_id, supplier_jurisdiction, clean=False),
+            ],
+        }
+
+        # --- Phase 3: Beneficial ownership (Pillar 4 — 3-hop deep graph) ---
+        beneficial_ownership: Dict[str, Any] = {
+            subject_id: [
+                {
+                    "entity_id": subject_id,
+                    "entity_name": subject_name,
+                    "entity_type": "company",
+                    "ownership_pct": 100.0,
+                    "jurisdiction": "USA",
+                    "hop_count": 0,
+                    "is_ubo": False,
+                    "relationship": "self",
+                },
+                {
+                    "entity_id": subject_director,
+                    "entity_name": subject_director,
+                    "entity_type": "individual",
+                    "ownership_pct": 100.0,
+                    "jurisdiction": "USA",
+                    "hop_count": 1,
+                    "is_ubo": False,
+                    "relationship": "director",
+                },
+            ],
+            supplier_id: [
+                {
+                    "entity_id": supplier_id,
+                    "entity_name": supplier_name,
+                    "entity_type": "company",
+                    "ownership_pct": 100.0,
+                    "jurisdiction": supplier_jurisdiction,
+                    "hop_count": 0,
+                    "is_ubo": False,
+                    "relationship": "self",
+                },
+                {
+                    "entity_id": supplier_director,
+                    "entity_name": supplier_director,
+                    "entity_type": "individual",
+                    "ownership_pct": 60.0,
+                    "jurisdiction": supplier_jurisdiction,
+                    "hop_count": 1,
+                    "is_ubo": False,
+                    "relationship": "registered_director",
+                },
+                {
+                    "entity_id": beneficial_owner,
+                    "entity_name": beneficial_owner,
+                    "entity_type": "individual",
+                    "ownership_pct": 40.0,
+                    "jurisdiction": supplier_jurisdiction,
+                    "hop_count": 1,
+                    "is_ubo": True,
+                    "relationship": "beneficial_owner",
+                    "parent_entity_id": supplier_id,
+                    "connection_to_subject": f"{relationship_type} of {subject_director}",
+                },
+            ],
+        }
+
+        gt_red_flags = [
+            f"Over-invoicing: ${invoiced_price:,.0f}/unit vs market ${market_price:,.0f}/unit ({premium_pct}% premium)",
+            f"Total overpayment: ${overpayment:,.0f} across {num_invoices} invoices",
+            f"Beneficial owner {beneficial_owner} is {relationship_type} of director {subject_director}",
+            f"Supplier registered in FATF-monitored jurisdiction: {supplier_jurisdiction}",
+            f"Unexplained ${mystery_amount:,.0f} inbound from {mystery_name} ({mystery_jurisdiction})",
+            f"Transaction reversal and re-issue with adjusted amount (${invoiced_price:,.0f} → ${adjusted_price:,.0f})",
+        ]
+        if diff == "hard":
+            gt_red_flags.append("Phantom shipments detected: zero-weight customs invoices with no bill of lading")
+
         # --- Ground truth ---
         ground_truth = {
             "correct_decision": "file_sar",
@@ -1213,6 +1613,8 @@ class ScenarioGenerator:
                 "reversed_transaction",
                 "unexplained_funds",
             ],
+            "red_flags": gt_red_flags,
+            "ubo_entity_id": beneficial_owner,
         }
 
         return {
@@ -1224,6 +1626,9 @@ class ScenarioGenerator:
             "source_of_funds": sof,
             "ground_truth": ground_truth,
             "market_data": market_data,
+            "device_fingerprints": device_fingerprints,
+            "customs_invoices": customs_invoices,
+            "beneficial_ownership": beneficial_ownership,
         }
 
     # ================================================================== #
