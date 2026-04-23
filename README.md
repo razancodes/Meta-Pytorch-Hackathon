@@ -16,7 +16,7 @@ app_port: 7860
 **A POMDP environment where language models manage Virtual Memory, handle Interrupts, and self-update their Kernel — all while solving $274B-scale financial crimes.**
 
 [![OpenEnv](https://img.shields.io/badge/OpenEnv-Compatible-blue)](https://github.com/openenv/openenv)
-[![Smoke Tests](https://img.shields.io/badge/tests-7%2F7-brightgreen)]()
+[![Smoke Tests](https://img.shields.io/badge/tests-8%2F8-brightgreen)]()
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)]()
 
@@ -52,7 +52,8 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │  ┌────────────────────────────────┬──────────────────────────────┐  │
 │  │  3D Threat Map & Entity Graph  │  RAM Monitor / Disk Storage  │  │
 │  │  (react-globe.gl + cola)       │  Active Process / Kernel     │  │
-│  │  [60% Width]                   │  [Stacked 40% Width]         │  │
+│  │  [60% Width]                   │  Curriculum Metrics (PLR)    │  │
+│  │                                │  [Stacked 40% Width]         │  │
 │  └────────────────────────────────┴──────────────────────────────┘  │
 │                     ← agui_state JSON per step                      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -67,7 +68,7 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │       │                              │                               │
 │       └──────────  AMLGrader  ◄──────┘                               │
 │                    Per-step: -0.05 PF, +0.10 disk, +0.15 kernel     │
-│                    Terminal:  [-1.0, +1.0] composite score           │
+│                    Terminal:  [-1.0, +1.01] composite score          │
 │                                                                      │
 │  ┌───────────────────────────────────────────────────────────────┐   │
 │  │  Procedural Generator: 3 typologies × 3 difficulties         │   │
@@ -79,14 +80,16 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │                     TRAINING INFRASTRUCTURE                          │
 │                                                                      │
 │  ┌────────────────────┐    ┌──────────────────────────────────┐     │
-│  │  train_ppo.py      │    │  train_ppo_70b.py                │     │
-│  │  T4 (15GB VRAM)    │    │  A100 × 4-8 (DeepSpeed ZeRO-3)  │     │
-│  │  8B + 4-bit + LoRA │    │  70B + 4-bit + LoRA (r=32)      │     │
-│  │  disable_adapter() │    │  disable_adapter() + sharding    │     │
-│  │  Peak: ~10 GB      │    │  Peak: ~50 GB/GPU               │     │
+│  │  train_ppo.py      │    │  train_grpo.py                   │     │
+│  │  L4 (24GB VRAM)    │    │  L4 (24GB VRAM)                  │     │
+│  │  8B + 4-bit + LoRA │    │  8B + 4-bit + LoRA               │     │
+│  │  disable_adapter() │    │  Group-relative advantage (G=4)  │     │
+│  │  --use-plr         │    │  --use-plr                       │     │
+│  │  Peak: ~10 GB      │    │  Peak: ~8.5 GB (no critic)       │     │
 │  └────────────────────┘    └──────────────────────────────────┘     │
 │                                                                      │
-│  Step-Level PPO: every tool call gets a reward signal               │
+│  PLR Curriculum: regret-weighted scenario replay (curriculum/)      │
+│  Step-Level PPO/GRPO: every tool call gets a reward signal          │
 │  KL via LoRA toggle: no second model copy needed                    │
 │  Auto-Revert: entropy heartbeat + checkpoint time machine           │
 └──────────────────────────────────────────────────────────────────────┘
@@ -119,7 +122,7 @@ curl http://localhost:8000/health
 
 # Run smoke tests
 python tests/test_smoke.py
-# → 7/7 tests passed ✓
+# → 8/8 tests passed ✓
 ```
 
 ### Run Inference (any OpenAI-compatible LLM)
@@ -131,7 +134,7 @@ export HF_TOKEN="sk-..."
 python inference.py
 ```
 
-### Train (T4 / Colab / Kaggle)
+### Train (L4 / Colab Pro)
 
 ```bash
 pip install unsloth trl peft wandb
@@ -139,11 +142,18 @@ pip install unsloth trl peft wandb
 # Dry-run (2 iterations, no GPU needed for env)
 python train_ppo.py --dry-run
 
-# Real training (~2.5 hours on T4)
-python train_ppo.py --iterations 50 --episodes 4
+# PPO with PLR curriculum (~2.5 hours on L4)
+python train_ppo.py --iterations 50 --episodes 4 --use-plr
+
+# GRPO with PLR curriculum
+python train_grpo.py --iterations 150 --group-size 4 --use-plr
+
+# LoRA rank ablation
+python train_ppo.py --lora-r 32 --use-plr --iterations 50
+python train_ppo.py --lora-r 64 --use-plr --iterations 50
 ```
 
-### Train (70B / A100 Cluster)
+### Train (70B / A100 Cluster — Proof of Scalability)
 
 ```bash
 pip install deepspeed unsloth trl peft wandb
@@ -231,8 +241,9 @@ python demo_eval.py --model checkpoints/best
 ├── state_manager.py             # OS mechanics engine
 ├── client.py                    # HTTP client (15 tool wrappers)
 ├── inference.py                 # ReAct agent (OS-aware)
-├── train_ppo.py                 # PPO trainer (T4, 8B)
-├── train_ppo_70b.py             # PPO trainer (A100 cluster, 70B)
+├── train_ppo.py                 # PPO trainer (L4, 8B) + PLR curriculum
+├── train_grpo.py                # GRPO trainer (L4, 8B) — no critic, group-relative
+├── train_ppo_70b.py             # PPO trainer (A100 cluster, 70B — proof of scalability)
 ├── train_dpo.py                 # DPO continuous learning (offline)
 ├── train_adversary.py           # GAN-style adversarial battle loop (SQLite)
 ├── hotswap.py                   # Zero-downtime LoRA adapter swap
@@ -240,6 +251,9 @@ python demo_eval.py --model checkpoints/best
 ├── Dockerfile                   # HF Spaces deployment (port 7860)
 ├── openenv.yaml                 # OpenEnv contract → openenv_server:app
 ├── .hfignore                    # Exclude patterns for openenv push
+├── curriculum/
+│   ├── plr_engine.py            # ★ Prioritized Level Replay engine
+│   └── oracle.py                # Proxy regret (1.0 - score)
 ├── scenarios/
 │   ├── procedural_generator.py  # POMDP graph builder
 │   ├── adversary_agent.py       # LLM-backed evasive scenario generator
@@ -251,10 +265,15 @@ python demo_eval.py --model checkpoints/best
 │   ├── app.py                   # Legacy FastAPI (used by trainers)
 │   └── aml_environment.py       # Core env (15 tools + OS mechanics)
 ├── frontend/
+│   ├── components/case/
+│   │   ├── CaseTerminal.tsx     # Main investigation terminal
+│   │   ├── CurriculumPanel.tsx  # ★ 5th AGUI panel (PLR metrics)
+│   │   └── case.module.css      # Brutalist design system
 │   ├── prisma/schema.prisma     # DPO preference pair database
 │   └── app/api/preferences/     # Correction capture API
 └── tests/
-    └── test_smoke.py            # 7 end-to-end tests
+    ├── test_smoke.py            # 8 end-to-end tests
+    └── test_plr.py              # PLR engine unit tests
 ```
 
 ---

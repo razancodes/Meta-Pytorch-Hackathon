@@ -638,3 +638,106 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
+
+/* ── Curriculum Panel (5th AGUI Panel) ──────── */
+.curriculumPanel {
+  background: var(--nx-surface);
+  border: 1px solid var(--nx-border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}
+
+.curriculumHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--nx-border);
+}
+
+.curriculumTitle {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--nx-dim);
+  text-transform: uppercase;
+}
+
+.curriculumBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  background: rgba(249, 115, 22, 0.15);
+  color: var(--accent-orange, #f97316);
+  border: 1px solid rgba(249, 115, 22, 0.3);
+}
+
+.curriculumGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.curriculumMetric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.curriculumLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--nx-dim);
+  text-transform: uppercase;
+}
+
+.curriculumValue {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--nx-text);
+}
+
+.curriculumDifficulty {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border: 1px solid;
+  border-radius: 2px;
+  display: inline-block;
+  width: fit-content;
+}
+
+.curriculumBar {
+  position: relative;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 2px;
+  overflow: hidden;
+  border: 1px solid var(--nx-border);
+}
+
+.curriculumBarFill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width 0.4s ease, background-color 0.4s ease;
+  min-width: 2px;
+}
+
+.curriculumBarValue {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--nx-text);
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+}
+

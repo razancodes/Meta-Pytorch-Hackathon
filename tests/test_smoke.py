@@ -253,6 +253,64 @@ ok(f"Procedural TBML PASSED (score={obs3.reward:+.4f})")
 
 
 # ===================================================================== #
+# 8. PLR Curriculum Engine                                               #
+# ===================================================================== #
+test("PLR Curriculum Engine — Buffer, Sampling, Metrics")
+
+from curriculum.plr_engine import PLREngine, ScenarioRecord
+from curriculum.oracle import proxy_regret
+
+plr = PLREngine(buffer_size=50, temperature=0.1, staleness_threshold=10)
+
+# Verify proxy regret
+assert proxy_regret(0.3) == 0.71, f"Expected 0.71, got {proxy_regret(0.3)}"
+assert proxy_regret(1.01) == 0.0, f"Expected 0.0, got {proxy_regret(1.01)}"
+assert proxy_regret(1.5) == 0.0, f"Expected 0.0, got {proxy_regret(1.5)}"
+print(f"  ✓ proxy_regret(0.3)={proxy_regret(0.3):.2f}, proxy_regret(1.01)={proxy_regret(1.01):.2f}")
+
+# Fill buffer with scenarios of varying scores
+difficulties = ["easy", "medium", "hard"]
+typologies = ["structuring", "layering", "trade_based_ml"]
+
+for i, (d, t) in enumerate([
+    ("easy", "structuring"), ("medium", "layering"), ("hard", "trade_based_ml"),
+    ("easy", "layering"), ("medium", "structuring"),
+]):
+    # Simulate decreasing scores (harder = lower score)
+    score = 0.8 - (i * 0.15)
+    plr.update(f"test_ep_{i}", d, t, score)
+    print(f"  ✓ Added {d}/{t} score={score:+.2f} regret={proxy_regret(score):.2f}")
+
+assert len(plr.buffer) == 5, f"Expected 5 buffer entries, got {len(plr.buffer)}"
+print(f"  ✓ Buffer size: {len(plr.buffer)}")
+
+# Verify sampling returns valid difficulty/typology pairs
+for _ in range(20):
+    d, t = plr.sample_scenario(difficulties, typologies)
+    assert d in difficulties, f"Invalid difficulty: {d}"
+    assert t in typologies, f"Invalid typology: {t}"
+print(f"  ✓ 20 samples all returned valid (difficulty, typology) pairs")
+
+# Verify WandB metrics
+metrics = plr.get_wandb_metrics()
+assert "curriculum/mean_regret" in metrics
+assert "curriculum/buffer_diversity" in metrics
+assert metrics["curriculum/buffer_size"] == 5
+assert metrics["curriculum/mean_regret"] > 0
+print(f"  ✓ WandB metrics: mean_regret={metrics['curriculum/mean_regret']:.3f}, "
+      f"diversity={metrics['curriculum/buffer_diversity']:.2f}")
+
+# Verify AGUI state output
+state = plr.get_current_state()
+assert state["enabled"] is True
+assert state["buffer_size"] == 5
+assert state["mean_regret"] > 0
+print(f"  ✓ AGUI state: enabled={state['enabled']}, difficulty={state['difficulty_label']}")
+
+ok("PLR Curriculum Engine PASSED")
+
+
+# ===================================================================== #
 # Results                                                                #
 # ===================================================================== #
 print(f"\n{'='*70}")
@@ -260,3 +318,4 @@ print(f"RESULTS: {PASS}/{TOTAL} tests passed")
 print(f"         {'All tests PASSED ✓' if PASS == TOTAL else 'SOME TESTS FAILED ✗'}")
 print(f"{'='*70}\n")
 sys.exit(0 if PASS == TOTAL else 1)
+

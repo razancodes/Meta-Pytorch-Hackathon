@@ -8,11 +8,23 @@ export interface RAMUsage {
   active_context: string[];
 }
 
+export interface CurriculumState {
+  enabled: boolean;
+  buffer_size: number;
+  mean_regret: number;
+  max_regret: number;
+  mean_difficulty: number;
+  buffer_diversity: number;
+  current_scenario_regret: number;
+  difficulty_label: string;
+}
+
 export interface AGUIState {
   ram_usage: RAMUsage;
   disk_storage: string[];
   async_jobs: AsyncJob[];
   kernel_directives: string[];
+  curriculum?: CurriculumState;
 }
 
 export interface AsyncJob {

@@ -414,8 +414,8 @@ class ScenarioGenerator:
         diff = difficulty or random.choice(self.DIFFICULTIES)
         typo = typology or random.choice(self.TYPOLOGIES)
 
-        self._txn_counter = 0
-        self._ent_counter = 0
+        self._txn_counter = random.randint(0, 9999)
+        self._ent_counter = random.randint(0, 9999)
 
         # Base date range for the episode
         epoch_start = datetime(2024, 1, 1) + timedelta(days=random.randint(0, 180))

@@ -1,7 +1,7 @@
 # Memex PPO Training Guide
 
 > Complete training pipeline for the Memex OS-Agent Benchmark.
-> Supports two tiers: **T4 (8B)** for prototyping and **A100 cluster (70B)** for production.
+> Supports three tiers: **L4 PPO (8B)** for ablation, **L4 GRPO (8B)** for critic-free training, and **A100 cluster (70B)** for scalability proof.
 
 ---
 
@@ -18,12 +18,12 @@
 
 ---
 
-## Tier 1: T4 Training (8B Model)
+## Tier 1: L4 Training (8B Model)
 
-**Target:** Google Colab Free / Kaggle T4 (15 GB VRAM)
-**Script:** `train_ppo.py`
+**Target:** Colab Pro L4 (24 GB VRAM)
+**Script:** `train_ppo.py` (PPO) / `train_grpo.py` (GRPO)
 **Model:** `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit`
-**Peak VRAM:** ~10 GB / 15 GB
+**Peak VRAM:** ~10 GB (PPO) / ~8.5 GB (GRPO)
 
 ### Colab Setup (Copy-Paste Cells)
 
@@ -72,7 +72,7 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 # ═══════════════════════════════════════════════════════════
 
 !python tests/test_smoke.py
-# Expected: 7/7 tests passed ✓
+# Expected: 8/8 tests passed ✓
 ```
 
 ```python
@@ -85,7 +85,7 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 5: Full training (~2.5 hours on T4)
+# CELL 5: Full PPO training with PLR (~2.5 hours on L4)
 # ═══════════════════════════════════════════════════════════
 
 import wandb
@@ -98,7 +98,23 @@ wandb.login()
     --episodes 4 \
     --iterations 15 \
     --temperature 0.5 \
+    --use-plr \
     --wandb-project memex-ppo
+```
+
+```python
+# ═══════════════════════════════════════════════════════════
+# CELL 5b: GRPO training with PLR (alternative, critic-free)
+# ═══════════════════════════════════════════════════════════
+
+!python train_grpo.py \
+    --lr 2e-4 \
+    --lora-r 16 \
+    --group-size 4 \
+    --episodes 4 \
+    --iterations 150 \
+    --use-plr \
+    --wandb-project memex-grpo
 ```
 
 ```python
@@ -222,7 +238,7 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 
 ### Hyperparameters
 
-| Parameter | T4 (8B) | A100 (70B) | Purpose |
+| Parameter | L4 (8B) | A100 (70B) | Purpose |
 |-----------|---------|------------|----------|
 | `lr` | `5e-6` | `2e-6` | Lower LR for 70B parametric stability |
 | `kl_coef` | `0.05` | `0.03` | KL penalty weight against frozen base |
@@ -264,23 +280,28 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 
 | File | Purpose |
 |------|---------|
-| `train_ppo.py` | Step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
-| `train_ppo_70b.py` | Multi-GPU PPO (DeepSpeed ZeRO-3, A100 cluster) |
+| `train_ppo.py` | Step-level PPO (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
+| `train_grpo.py` | Group Relative Policy Optimization (no critic, group-relative advantage) |
+| `train_ppo_70b.py` | Multi-GPU PPO (DeepSpeed ZeRO-3, A100 cluster, proof of scalability) |
 | `train_dpo.py` | Offline DPO trainer (continuous learning from user corrections) |
 | `train_adversary.py` | GAN-style adversarial battle loop for generating DPO scenarios |
 | `hotswap.py` | Zero-downtime LoRA adapter hot-swap utility |
 | `demo_eval.py` | 1MDB demo with AGUI replay capture |
+| `curriculum/plr_engine.py` | PLR buffer: regret-weighted scenario sampling |
+| `curriculum/oracle.py` | Proxy regret oracle (`1.0 - protagonist_score`) |
 | `server/aml_environment.py` | Core environment (15 tools + OS mechanics) |
 | `scenarios/procedural_generator.py` | Procedural POMDP scenario builder |
 | `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator |
 | `adversarial_successes.db` | SQLite database storing failed scenarios for DPO |
 | `graders/grader.py` | Dense reward engine (per-step + terminal) |
 | `state_manager.py` | OS mechanics (RAM, Disk, Async Queue, Kernel) |
-| `models.py` | Pydantic type definitions |
-| `tests/test_smoke.py` | Environment verification (7/7 tests) |
-| `checkpoints/` | T4 training output (LoRA adapters + tokenizer) |
+| `models.py` | Pydantic type definitions (incl. CurriculumState) |
+| `tests/test_smoke.py` | Environment verification (8/8 tests) |
+| `tests/test_plr.py` | PLR engine unit tests |
+| `checkpoints/` | Training output (LoRA adapters + tokenizer + PLR buffer) |
 | `checkpoints_70b/` | 70B training output (DeepSpeed sharded checkpoints) |
 | `demo_output/` | AGUI JSON payloads for frontend replay |
+| `frontend/components/case/CurriculumPanel.tsx` | 5th AGUI panel (PLR curriculum visualization) |
 | `frontend/prisma/schema.prisma` | Prisma schema for DPO preference pairs |
 | `frontend/app/api/preferences/` | Next.js API for capturing user corrections |
 

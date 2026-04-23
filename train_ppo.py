@@ -64,7 +64,7 @@ class PPOConfig:
 
     # ── LoRA ──
     lora_r: int = 16
-    lora_alpha: int = 32
+    lora_alpha: int = -1  # Auto-computed as lora_r * 2 in __post_init__
     lora_dropout: float = 0.05
     lora_targets: list = field(default_factory=lambda: [
         "q_proj", "k_proj", "v_proj", "o_proj",
@@ -102,6 +102,15 @@ class PPOConfig:
     save_every: int = 10
     output_dir: str = os.path.join(PROJECT_ROOT, "checkpoints")
     dry_run: bool = False
+
+    # ── PLR Curriculum ──
+    use_plr: bool = False
+    plr_buffer_size: int = 200
+
+    def __post_init__(self):
+        """Auto-compute lora_alpha = lora_r * 2 if not explicitly set."""
+        if self.lora_alpha == -1:
+            self.lora_alpha = self.lora_r * 2
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -673,6 +682,13 @@ def train(cfg: PPOConfig) -> None:
     ppo = MemexPPO(model, tokenizer, cfg, device)
     env = AMLEnvironment()
 
+    # ── PLR Curriculum Engine ──
+    plr = None
+    if cfg.use_plr:
+        from curriculum.plr_engine import PLREngine
+        plr = PLREngine(buffer_size=cfg.plr_buffer_size)
+        print(f"  ✓ PLR Curriculum enabled (buffer={cfg.plr_buffer_size})")
+
     iters = 2 if cfg.dry_run else cfg.total_iterations
     eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
     best_score = -float("inf")
@@ -692,16 +708,26 @@ def train(cfg: PPOConfig) -> None:
 
         # ── Collect trajectories ──
         for ep in range(eps_per):
-            diff = random.choice(cfg.difficulties)
-            typo = random.choice(cfg.typologies)
+            # PLR curriculum: adaptive scenario selection
+            if plr is not None:
+                diff, typo = plr.sample_scenario(cfg.difficulties, cfg.typologies)
+            else:
+                diff = random.choice(cfg.difficulties)
+                typo = random.choice(cfg.typologies)
 
             try:
                 steps, stats = ppo.rollout(env, diff, typo)
                 all_steps.extend(steps)
                 ep_stats.append(stats)
 
+                # PLR update: feed regret back into the buffer
+                if plr is not None:
+                    scenario_id = f"iter{it}_ep{ep}_{diff}_{typo}"
+                    plr.update(scenario_id, diff, typo, stats.score)
+
+                plr_tag = " [PLR]" if plr is not None else ""
                 print(
-                    f"  It {it:>3} Ep {ep+1} | {diff}/{typo} | "
+                    f"  It {it:>3} Ep {ep+1} | {diff}/{typo}{plr_tag} | "
                     f"steps={stats.steps:>2} score={stats.score:+.3f} | "
                     f"PF={stats.page_faults} AT={stats.async_timeouts} "
                     f"SP={stats.successful_pages} MI={stats.meta_injections}"
@@ -833,7 +859,7 @@ def train(cfg: PPOConfig) -> None:
         # ── WandB ──
         if not cfg.dry_run:
             import wandb
-            wandb.log({
+            log_dict = {
                 "iteration": it,
                 "ppo/returns/mean": mean_score,
                 **ppo_stats,
@@ -846,14 +872,22 @@ def train(cfg: PPOConfig) -> None:
                 "stability/entropy_coef": cfg.entropy_coef,
                 "stability/temperature": cfg.temperature,
                 "stability/revert_count": revert_count,
-            })
+            }
+            # Merge PLR curriculum metrics
+            if plr is not None:
+                log_dict.update(plr.get_wandb_metrics())
+            wandb.log(log_dict)
 
         # ── Checkpoint ──
         if mean_score > best_score:
             best_score = mean_score
             ppo.save(os.path.join(cfg.output_dir, "best"))
+            if plr is not None:
+                plr.save(os.path.join(cfg.output_dir, "best", "plr_buffer.json"))
         if it % cfg.save_every == 0:
             ppo.save(os.path.join(cfg.output_dir, f"iter-{it}"))
+            if plr is not None:
+                plr.save(os.path.join(cfg.output_dir, f"iter-{it}", "plr_buffer.json"))
 
         # ── GC ──
         del all_steps
@@ -924,6 +958,8 @@ def main():
     p.add_argument("--wandb-project", default=PPOConfig.wandb_project)
     p.add_argument("--output-dir", default=PPOConfig.output_dir)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--use-plr", action="store_true", default=False,
+                   help="Enable PLR curriculum (adaptive scenario sampling)")
     p.add_argument("--eval", type=str, default=None, metavar="PATH")
     args = p.parse_args()
 
@@ -935,7 +971,7 @@ def main():
             episodes_per_iter=args.episodes, total_iterations=args.iterations,
             temperature=args.temperature,
             wandb_project=args.wandb_project, output_dir=args.output_dir,
-            dry_run=args.dry_run,
+            dry_run=args.dry_run, use_plr=args.use_plr,
         ))
 
 

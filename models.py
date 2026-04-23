@@ -125,6 +125,19 @@ class RAMUsage(BaseModel):
     active_context: List[str] = Field(default_factory=list)
 
 
+class CurriculumState(BaseModel):
+    """PLR Curriculum Engine state for the 5th AGUI panel."""
+
+    enabled: bool = Field(default=False, description="Whether PLR curriculum is active")
+    buffer_size: int = Field(default=0, description="Number of scenarios in the PLR buffer")
+    mean_regret: float = Field(default=0.0, description="Mean regret across buffer scenarios")
+    max_regret: float = Field(default=0.0, description="Max regret in buffer")
+    mean_difficulty: float = Field(default=1.0, description="Mean difficulty score (1=easy, 3=hard)")
+    buffer_diversity: float = Field(default=0.0, description="Fraction of 9 scenario combos covered")
+    current_scenario_regret: float = Field(default=0.0, description="Regret of current/latest scenario")
+    difficulty_label: str = Field(default="easy", description="Current scenario difficulty label")
+
+
 class AGUIState(BaseModel):
     """AGUI visualization payload emitted after every step."""
 
@@ -132,6 +145,7 @@ class AGUIState(BaseModel):
     disk_storage: List[str] = Field(default_factory=list)
     async_jobs: List[Dict[str, Any]] = Field(default_factory=list)
     kernel_directives: List[str] = Field(default_factory=list)
+    curriculum: CurriculumState = Field(default_factory=CurriculumState)
 
 
 # ---------------------------------------------------------------------------

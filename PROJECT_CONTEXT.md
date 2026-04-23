@@ -30,12 +30,16 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | **Legacy Server** | `server/app.py` | FastAPI HTTP server (dual-mode: OpenEnv / standalone, used by trainers) |
 | **Client** | `client.py` | HTTP client with all 15 tool wrappers |
 | **Inference** | `inference.py` | ReAct agent loop with OS-mechanic awareness |
-| **PPO Trainer (T4)** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, T4-optimized) |
-| **PPO Trainer (70B)** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster |
+| **PPO Trainer (L4)** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
+| **GRPO Trainer (L4)** | `train_grpo.py` | Group Relative Policy Optimization (no critic, group-relative advantage) |
+| **PPO Trainer (70B)** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster (proof of scalability) |
 | **DPO Trainer** | `train_dpo.py` | Offline DPO continuous learning from user preference pairs |
 | **LoRA Hot-Swap** | `hotswap.py` | Zero-downtime LoRA adapter reload into running models |
+| **PLR Engine** | `curriculum/plr_engine.py` | Prioritized Level Replay: regret-weighted scenario sampling buffer |
+| **Proxy Oracle** | `curriculum/oracle.py` | Regret computation: `1.0 - protagonist_score` |
 | **Demo** | `demo_eval.py` | 1MDB-inspired demo with AGUI replay capture |
-| **Tests** | `tests/test_smoke.py` | 7 end-to-end smoke tests |
+| **Tests** | `tests/test_smoke.py` | 8 end-to-end smoke tests |
+| **PLR Tests** | `tests/test_plr.py` | PLR engine unit tests |
 
 ### OS Mechanics
 
@@ -63,7 +67,7 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 **Per-step:** action cost (-0.02), redundancy (-0.03), unique tool (+0.03), page fault (-0.05), async timeout (-0.10), disk write (+0.10, max 3/episode), kernel inject (+0.15, max 2/episode)
 
-**Terminal:** decision accuracy (0.30) + typology (0.15) + findings coverage (0.25) + entity F1 (0.15) + efficiency (0.15) → mapped to [-1.0, +1.0]
+**Terminal:** decision accuracy (0.30) + typology (0.15) + findings coverage (0.20) + entity F1 (0.15) + UBO identification (0.05) + Phase 3 pillar tools (0.05) + efficiency (0.10) → mapped to [-1.0, +1.01] (including OS micro-rewards)
 
 ### Scenario Generation
 
@@ -84,40 +88,37 @@ All entity IDs are procedurally generated per episode — no memorization possib
 ✓ Full episode: structuring (easy) → score +1.01
 ✓ Full episode: layering (medium) → score +1.01
 ✓ Full episode: trade-based ML (hard) → score +1.01
+✓ PLR curriculum engine: buffer, sampling, metrics, save/load
 ```
 
-**All 7/7 smoke tests pass.**
+**All 8/8 smoke tests pass.**
 
 ---
 
 ## Frontend Architecture: AGUI (Agentic Graphical User Interface)
 
-The backend is invisible by design — an LLM managing RAM eviction and async queues produces no visual signal. The **AGUI** solves this by emitting a strict JSON `agui_state` payload after every environment step, which the Next.js frontend consumes to render a real-time **4-Panel Tactical Dashboard**:
+The backend is invisible by design — an LLM managing RAM eviction and async queues produces no visual signal. The **AGUI** solves this by emitting a strict JSON `agui_state` payload after every environment step, which the Next.js frontend consumes to render a real-time **5-Panel Tactical Dashboard**:
 
 ```
 ┌─────────────────────────────────────┬─────────────────────────────────┐
-│        ENTITY GRAPH                 │   RAM MONITOR & DISK STORAGE    │
-│        (60% Width)                  │         (Stacked Right)         │
-│                                     │                                 │
-│  [3D Globe / Flat Map Toggle]       │  Capacity: 2/2 observations     │
-│  react-globe.gl vectors             │  [█████████████ FULL]           │
-│  Cytoscape.js Cola Physics          │                                 │
-│                                     │  1. PEP confirmed: ENT_B        │
-│  (Smooth Incremental Updates)       │  2. Shared address: ENT_B/C     │
+│        ENTITY GRAPH                 │   SYSTEM RESOURCES (Panel 1)    │
+│        (60% Width)                  │    - RAM & Disk Storage         │
+│                                     │    - Active Async Processes     │
+│  [3D Globe / Flat Map Toggle]       │    - Kernel Directives          │
+│  react-globe.gl vectors             ├─────────────────────────────────┤
+│  Cytoscape.js Cola Physics          │   AGENT TERMINAL (Panel 2)      │
+│                                     │    - ReAct scratchpad reasoning │
+│  (Smooth Incremental Updates)       │    - Tool execution logs        │
 │                                     ├─────────────────────────────────┤
-│                                     │    ACTIVE PROCESSES             │
-│                                     │                                 │
-│                                     │  REQ-001: wire_trace            │
-│                                     │    ETA: 0 steps (READY)         │
-│                                     ├─────────────────────────────────┤
-│                                     │     KERNEL DIRECTIVES           │
-│                                     │                                 │
-│                                     │  [BASE] ReAct investigation     │
-│                                     │  [INJECTED] CTR threshold:      │
+│                                     │ CURRICULUM ENGINE (Panel 3, opt)│
+│                                     │    - PLR Regret Metrics         │
+│                                     │    - Scenario Difficulty Gauge  │
 └─────────────────────────────────────┴─────────────────────────────────┘
 ```
 
-**Data contract:** `state_manager.py` builds the `AGUIState` object (defined in `models.py`) containing `ram_usage` (capacity string + active context list), `disk_storage` (list of persisted findings), `async_jobs` (job IDs with ETAs and statuses), and `kernel_directives` (base + agent-injected rules). This payload is nested inside `observation.metadata.agui_state` on every `/step` response.
+**Data contract:** `state_manager.py` builds the `AGUIState` object (defined in `models.py`) containing `ram_usage` (capacity string + active context list), `disk_storage` (list of persisted findings), `async_jobs` (job IDs with ETAs and statuses), `kernel_directives` (base + agent-injected rules), and `curriculum` (PLR buffer state: enabled flag, buffer_size, mean_regret, max_regret, difficulty gauge, diversity score). This payload is nested inside `observation.metadata.agui_state` on every `/step` response.
+
+The frontend renders a **5th panel** (`CurriculumPanel.tsx`) below the terminal when `curriculum.enabled === true`, showing regret bars, difficulty gauges, and buffer coverage.
 
 **Frontend replay:** `demo_eval.py` captures per-step AGUI snapshots as `step_NNN.json` files in `demo_output/`. The Next.js frontend reads these sequentially to replay the full investigation as an animated OS simulation — judges see the agent's RAM filling, data paging to disk, async jobs completing, and kernel directives accumulating in real time.
 

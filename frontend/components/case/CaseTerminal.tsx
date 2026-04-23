@@ -5,6 +5,7 @@ import styles from './case.module.css';
 import EnvironmentStatePanel from './EnvironmentStatePanel';
 import EntityGraph from './EntityGraph';
 import AgentTerminal from './AgentTerminal';
+import CurriculumPanel from './CurriculumPanel';
 import type { AGUIState, ReplayStep } from '@/lib/types';
 import { scenarioToGraph } from '@/lib/dataTransform';
 
@@ -160,6 +161,7 @@ export default function CaseTerminal({ steps, currentStepIndex, onBack, alertSum
         {graphPanel}
         {envPanel}
         {terminalPanel}
+        <CurriculumPanel curriculum={aguiState?.curriculum} />
       </div>
     </div>
   );

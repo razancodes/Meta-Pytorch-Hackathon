@@ -21,6 +21,7 @@ from models import (
     AMLState,
     AsyncJobInfo,
     AsyncJobStatus,
+    CurriculumState,
     RAMUsage,
 )
 
@@ -239,8 +240,9 @@ class StateManager:
     # AGUI Payload                                                         #
     # ------------------------------------------------------------------ #
 
-    def build_agui_state(self) -> Dict[str, Any]:
+    def build_agui_state(self, curriculum_data: dict | None = None) -> Dict[str, Any]:
         """Generate the AGUI visualization payload."""
+        curriculum = CurriculumState(**curriculum_data) if curriculum_data is not None else CurriculumState()
         agui = AGUIState(
             ram_usage=RAMUsage(
                 capacity=f"{len(self._ram)}/{RAM_CAPACITY} observations",
@@ -258,6 +260,7 @@ class StateManager:
                 if j.status != AsyncJobStatus.RETRIEVED
             ],
             kernel_directives=list(self._kernel),
+            curriculum=curriculum,
         )
         return agui.model_dump()
 
