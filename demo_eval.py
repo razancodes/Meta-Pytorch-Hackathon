@@ -380,7 +380,17 @@ SCRIPTED_ACTIONS = [
             "pep_connection", "offshore_source", "shared_registered_address",
             "rapid_fan_out", "no_source_documentation", "reversed_transaction",
         ],
-    }, "File SAR with complete evidence chain"),
+        "ubo_identified": "CUST-1MDB-001",
+        "evidence_chain": (
+            "$681M wired from PetraStar Energy Fund (ENT-PETRA-001) to Golden Star Holdings "
+            "(ENT-GSTAR-001, Seychelles shell) on 2024-01-15. $260M layered to Arabella "
+            "Investments (ENT-ARBL-001, BVI shell sharing same registered address). Funds "
+            "dispersed: $250M to NY real estate, $135M to Geneva art dealer, $30M back to "
+            "orchestrator Taek Jho Lowe (CUST-1MDB-001) as backdated consulting fees. $6M "
+            "reversal from Arabella to PetraStar indicates cover-up. UBO is Taek Jho Lowe, "
+            "PEP connected to Malaysian Minister of Finance."
+        ),
+    }, "File SAR with complete FinCEN-grade evidence chain"),
 ]
 
 

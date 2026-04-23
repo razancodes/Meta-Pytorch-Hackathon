@@ -1,8 +1,8 @@
 """
 Memex OS-Agent Benchmark — HTTP client.
 
-Thin Python wrapper around the FastAPI server endpoints. Supports both
-legacy domain tools (9) and OS-mechanic tools (6) for a total of 15 tools.
+Thin Python wrapper around the FastAPI server endpoints. Supports
+domain tools (12), OS-mechanic tools (6) for a total of 18 tools.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ class AMLEnvironmentClient:
         return resp.json()
 
     # ------------------------------------------------------------------
-    # Domain tool wrappers (9 tools)
+    # Domain tool wrappers (12 tools)
     # ------------------------------------------------------------------
 
     def review_alert(self, alert_id: Optional[str] = None) -> Dict[str, Any]:
@@ -142,12 +142,19 @@ class AMLEnvironmentClient:
         findings: List[str],
         typology: str,
         entities_involved: List[str],
+        ubo_identified: Optional[str] = None,
+        evidence_chain: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self.step("file_sar", parameters={
+        params: Dict[str, Any] = {
             "findings": findings,
             "typology": typology,
             "entities_involved": entities_involved,
-        })
+        }
+        if ubo_identified is not None:
+            params["ubo_identified"] = ubo_identified
+        if evidence_chain is not None:
+            params["evidence_chain"] = evidence_chain
+        return self.step("file_sar", parameters=params)
 
     def close_alert(
         self,
@@ -158,6 +165,22 @@ class AMLEnvironmentClient:
             "reason": reason,
             "findings": findings or [],
         })
+
+    # ------------------------------------------------------------------
+    # Phase 3: FinCEN 4-Pillar tool wrappers (3 tools)
+    # ------------------------------------------------------------------
+
+    def check_device_overlap(self, entity_id: str) -> Dict[str, Any]:
+        """Check for shared device fingerprints / mule ring indicators."""
+        return self.step("check_device_overlap", parameters={"entity_id": entity_id})
+
+    def verify_customs_invoice(self, invoice_id: str) -> Dict[str, Any]:
+        """Verify a customs invoice for phantom shipment / over-invoicing."""
+        return self.step("verify_customs_invoice", parameters={"invoice_id": invoice_id})
+
+    def query_beneficial_ownership(self, entity_id: str) -> Dict[str, Any]:
+        """Trace beneficial ownership through shell layers to find UBOs."""
+        return self.step("query_beneficial_ownership", parameters={"entity_id": entity_id})
 
     # ------------------------------------------------------------------
     # OS-Mechanic tool wrappers (6 tools)
