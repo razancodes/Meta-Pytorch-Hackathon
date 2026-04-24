@@ -433,9 +433,11 @@ class ScenarioGenerator:
         epoch_end = epoch_start + timedelta(days=random.randint(30, 120))
 
         # Decide clean vs suspicious
+        # If typology is explicitly requested, the caller wants a suspicious
+        # scenario — only roll for clean when typology is None (random).
         if force_clean is True:
             is_clean = True
-        elif force_clean is False:
+        elif force_clean is False or typology is not None:
             is_clean = False
         else:
             is_clean = random.random() < self._clean_ratio
