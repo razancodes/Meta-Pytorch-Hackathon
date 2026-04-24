@@ -56,7 +56,9 @@ def get_scenario(task_id: str, seed: int | None = None) -> BaseScenario:
         if full in typologies:
             typology = full
 
-    return _generator.generate(difficulty=difficulty, typology=typology)
+    return _generator.generate(
+        difficulty=difficulty, typology=typology, force_clean=False,
+    )
 
 
 __all__ = [
