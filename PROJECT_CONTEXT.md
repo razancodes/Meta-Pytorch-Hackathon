@@ -59,11 +59,11 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 ### Tool Roster (18 Total)
 
-**Domain Investigation Tools (9):** `review_alert`, `get_customer_profile`, `query_transactions`, `check_watchlist`, `trace_network`, `check_source_of_funds`, `check_market_price`, `assess_risk`, `file_sar` / `close_alert` (terminal)
+**Domain Investigation Tools (10):** `review_alert`, `get_customer_profile`, `query_transactions`, `check_watchlist`, `trace_network`, `check_source_of_funds`, `check_market_price` (TBML commodity pricing), `assess_risk`, `file_sar` / `close_alert` (terminal)
 
 **Phase 3 — FinCEN Investigation Tools (3):** `check_device_overlap` (mule-ring detection), `verify_customs_invoice` (TBML phantom shipments), `query_beneficial_ownership` (UBO shell-layer tracing)
 
-**OS-Mechanic Tools (6):** `write_to_case_file`, `request_wire_trace`, `retrieve_async_result`, `search_compliance_manual`, `update_system_prompt`, `check_market_price`
+**OS-Mechanic Tools (5):** `write_to_case_file`, `request_wire_trace`, `retrieve_async_result`, `search_compliance_manual`, `update_system_prompt`
 
 ### Reward System
 

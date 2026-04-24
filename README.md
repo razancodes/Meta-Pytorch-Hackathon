@@ -137,7 +137,7 @@ python inference.py
 ### Train (L4 / Colab Pro)
 
 ```bash
-pip install unsloth trl peft wandb
+pip install unsloth trl peft accelerate bitsandbytes wandb
 
 # Dry-run (2 iterations, no GPU needed for env)
 python train_ppo.py --dry-run
@@ -182,14 +182,15 @@ python demo_eval.py --model checkpoints/best
 
 ## Tool Roster (18 Tools)
 
-| Domain Tools (9) | Phase 3 — FinCEN (3) | OS-Mechanic Tools (6) |
+| Domain Tools (10) | Phase 3 — FinCEN (3) | OS-Mechanic Tools (5) |
 |:---|:---|:---|
 | `review_alert` — Alert details | `check_device_overlap` — Mule rings | `write_to_case_file` — Page to disk (+0.10, cap 3) |
 | `get_customer_profile` — KYC data | `verify_customs_invoice` — Phantom shipments | `request_wire_trace` — Async job (2-4 step ETA) |
 | `query_transactions` — Transaction history | `query_beneficial_ownership` — UBO tracing | `retrieve_async_result` — Fetch completed job |
 | `check_watchlist` — OFAC/PEP/UN screening | | `search_compliance_manual` — Find AML rules |
 | `trace_network` — Entity connections | | `update_system_prompt` — Kernel inject (+0.15, cap 2) |
-| `check_source_of_funds` — Source verification | | `check_market_price` — Trade price comparison |
+| `check_source_of_funds` — Source verification | | |
+| `check_market_price` — TBML commodity pricing | | |
 | `assess_risk` — Risk scoring | | |
 | `file_sar` / `close_alert` — **Terminal** | | |
 

@@ -133,11 +133,14 @@ Generate a scenario with this JSON structure:
 class AdversaryAgent:
     """LLM-powered adversarial scenario generator.
 
-    Uses an OpenAI-compatible API to generate complex, evasive AML scenarios
-    that are designed to fool the PPO Defender agent.
+    Uses a local Llama-3.1-8B model (via Unsloth) or an OpenAI-compatible API
+    to generate complex, evasive AML scenarios that are designed to fool the
+    PPO Defender agent.  Falls back to procedural generation when no LLM is
+    available.
 
     Args:
-        model: Model name (default: gpt-4o-mini).
+        model: Model name (default: gpt-4o-mini, overridden to local 8B when
+               run via train_adversary.py --local).
         api_key: OpenAI API key (falls back to OPENAI_API_KEY env var).
         base_url: Base URL for OpenAI-compatible API.
         temperature: Sampling temperature for creativity.

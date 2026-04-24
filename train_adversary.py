@@ -13,7 +13,6 @@ Architecture:
 
 Usage:
     python train_adversary.py \
-        --adversary-model gpt-4o-mini \
         --episodes 20 \
         --difficulty hard \
         --threshold 0.3
@@ -321,15 +320,15 @@ def main() -> None:
         epilog="""
 Examples:
     python train_adversary.py --episodes 20 --difficulty hard
-    python train_adversary.py --adversary-model gpt-4o-mini --typology mule_ring
+    python train_adversary.py --openai --adversary-model gpt-4o-mini --typology mule_ring
     python train_adversary.py --threshold 0.4 --episodes 50
         """,
     )
 
     parser.add_argument(
         "--adversary-model",
-        default="gpt-4o-mini",
-        help="LLM model for the adversary agent (default: gpt-4o-mini)",
+        default="unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
+        help="LLM model for the adversary agent (default: local Llama-3.1-8B)",
     )
     parser.add_argument(
         "--api-key",
@@ -374,13 +373,22 @@ Examples:
     parser.add_argument(
         "--local",
         action="store_true",
-        help="Run entirely locally using Unsloth (overrides adversary model to Llama 8B if default)",
+        default=True,
+        help="Run locally using Unsloth (default: True)",
+    )
+    parser.add_argument(
+        "--openai",
+        action="store_true",
+        default=False,
+        help="Use OpenAI API instead of local model (requires OPENAI_API_KEY)",
     )
 
     args = parser.parse_args()
 
-    if args.local and args.adversary_model == "gpt-4o-mini":
-        args.adversary_model = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+    if args.openai:
+        args.local = False
+        if args.adversary_model == "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit":
+            args.adversary_model = "gpt-4o-mini"
 
     results = run_battle(
         adversary_model=args.adversary_model,
