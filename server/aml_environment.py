@@ -258,6 +258,10 @@ class AMLEnvironment(Environment):
             is_successful_page = flags.get("successful_page", False)
             is_meta_injection = flags.get("meta_injection", False)
         except Exception as exc:
+            # Terminal tools (file_sar, close_alert) MUST NOT be silently
+            # swallowed — a crash there produces silently wrong rewards.
+            if tool in ("file_sar", "close_alert"):
+                raise
             result = {"error": str(exc)}
             message = f"Tool '{tool}' raised an error: {exc}"
             done = False
@@ -271,29 +275,33 @@ class AMLEnvironment(Environment):
         if is_meta_injection and self._state.kernel_inject_reward_count >= 2:
             is_meta_injection = False  # No more +0.15 bonus
 
-        # Compute step reward with all OS mechanic flags
-        step_reward = self._grader.grade_step(
-            tool, params, self._state, call_hash,
-            is_page_fault=is_page_fault,
-            is_async_timeout=is_async_timeout,
-            is_successful_page=is_successful_page,
-            is_meta_injection=is_meta_injection,
-        )
-        self._state.accumulated_reward += step_reward
+        # Terminal actions (file_sar, close_alert) compute their own final
+        # score via grader.grade() inside the handler.  Do NOT add another
+        # grade_step() on top — that would double-count.
+        if not done:
+            # Compute step reward with all OS mechanic flags
+            step_reward = self._grader.grade_step(
+                tool, params, self._state, call_hash,
+                is_page_fault=is_page_fault,
+                is_async_timeout=is_async_timeout,
+                is_successful_page=is_successful_page,
+                is_meta_injection=is_meta_injection,
+            )
+            self._state.accumulated_reward += step_reward
 
-        # Record hash
-        if call_hash not in self._state.tool_call_hashes:
-            self._state.tool_call_hashes.append(call_hash)
+            # Record hash
+            if call_hash not in self._state.tool_call_hashes:
+                self._state.tool_call_hashes.append(call_hash)
 
-        # Update OS mechanic counters
-        if is_async_timeout:
-            self._state.async_timeout_count += 1
-        if is_successful_page:
-            self._state.successful_pages += 1
-            self._state.disk_write_reward_count += 1  # Track rewarded writes
-        if is_meta_injection:
-            self._state.meta_injections += 1
-            self._state.kernel_inject_reward_count += 1  # Track rewarded injections
+            # Update OS mechanic counters
+            if is_async_timeout:
+                self._state.async_timeout_count += 1
+            if is_successful_page:
+                self._state.successful_pages += 1
+                self._state.disk_write_reward_count += 1  # Track rewarded writes
+            if is_meta_injection:
+                self._state.meta_injections += 1
+                self._state.kernel_inject_reward_count += 1  # Track rewarded injections
 
         # --- OS Mechanic: Push observation summary into RAM ---
         obs_summary = f"Step {self._state.step_count} [{tool}]: {message}"
