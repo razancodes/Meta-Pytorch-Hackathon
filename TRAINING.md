@@ -239,14 +239,14 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 ### Hyperparameters
 
 | Parameter | L4 (PPO) | L4 (GRPO) | A100 (70B) | Purpose |
-|-----------|----------|-----------|------------|----------|
+|-----------|----------|-----------|------------|---------|
 | `lr` | `5e-6` | `2e-4` | `2e-6` | Higher LR for GRPO (critic-free); lower for 70B |
 | `kl_coef` | `0.05` | `0.05` | `0.03` | KL penalty weight against frozen base |
-| `entropy_coef` | `0.05` | `0.05` | Exploration bonus |
-| `clip_eps` | `0.2` | `0.2` | Standard PPO clipping |
-| `reward_clip` | `2.0` | `2.0` | Return clipping bound |
-| `grad_accum_steps` | `4` | `8` | Effective batch size |
-| `max_grad_norm` | `1.0` | `0.5` | Tighter gradient clipping for 70B |
+| `entropy_coef` | `0.05` | `0.05` | `0.05` | Exploration bonus |
+| `clip_eps` | `0.2` | `0.2` | `0.2` | Standard PPO clipping |
+| `reward_clip` | `2.0` | `2.0` | `2.0` | Return clipping bound |
+| `grad_accum_steps` | `4` | `4` | `8` | Effective batch size |
+| `max_grad_norm` | `1.0` | `1.0` | `0.5` | Tighter gradient clipping for 70B |
 
 ---
 
@@ -289,9 +289,9 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 | `demo_eval.py` | 1MDB demo with AGUI replay capture |
 | `curriculum/plr_engine.py` | PLR buffer: regret-weighted scenario sampling |
 | `curriculum/oracle.py` | Proxy regret oracle (`1.0 - protagonist_score`) |
-| `server/aml_environment.py` | Core environment (15 tools + OS mechanics) |
+| `server/aml_environment.py` | Core environment (18 tools + OS mechanics) |
 | `scenarios/procedural_generator.py` | Procedural POMDP scenario builder |
-| `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator |
+| `scenarios/adversary_agent.py` | Local Llama-3.1-8B evasive scenario generator |
 | `adversarial_successes.db` | SQLite database storing failed scenarios for DPO |
 | `graders/grader.py` | Dense reward engine (per-step + terminal) |
 | `state_manager.py` | OS mechanics (RAM, Disk, Async Queue, Kernel) |
@@ -314,13 +314,16 @@ To generate challenging negative examples for the DPO pipeline, Memex includes a
 ### Setup
 
 ```bash
-# Run the battle orchestrator (generates scenarios and tests them against the Defender)
-python train_adversary.py --adversary-model gpt-4o-mini --episodes 20 --difficulty hard
+# Run the battle orchestrator (uses local Llama-3.1-8B — no API key needed)
+python train_adversary.py --episodes 20 --difficulty hard
+
+# Or with procedural fallback (no GPU needed)
+MEMEX_BACKEND=procedural python train_adversary.py --episodes 20 --difficulty hard
 ```
 
 ### Workflow
 
-1. **Adversary Generation:** `adversary_agent.py` uses an LLM (or procedural fallback) to generate complex, evasive transaction graphs (e.g., mule rings, shell company pass-throughs, phantom invoices).
+1. **Adversary Generation:** `adversary_agent.py` uses a local Llama-3.1-8B model (or procedural fallback) to generate complex, evasive transaction graphs (e.g., mule rings, shell company pass-throughs, phantom invoices).
 2. **Defender Evaluation:** The Defender runs the investigation against the generated scenario.
 3. **Persistence:** If the Defender fails (score < threshold), the scenario is recorded in `adversarial_successes.db` (SQLite).
 4. **Continuous Learning:** These evasive scenarios are then used as high-value negative examples in the DPO pipeline to harden the agent against new ML typologies.

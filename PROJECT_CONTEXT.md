@@ -1,7 +1,7 @@
 # Memex: Project Context
 
 > Living document tracking the current state of the Memex OS-Agent Benchmark.
-> Last updated: 2026-04-23
+> Last updated: 2026-04-24
 
 ## What Is Memex?
 
@@ -17,18 +17,18 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **Models** | `models.py` | Single source of truth for all Pydantic types: `AMLAction`, `AMLObservation`, `AMLState`, `AsyncJobInfo`, `AGUIState` |
+| **Models** | `models.py` | Single source of truth for all Pydantic types: `AMLAction`, `AMLObservation`, `AMLState`, `AsyncJobInfo`, `AGUIState`, `CurriculumState` |
 | **State Manager** | `state_manager.py` | OS mechanics engine: RAM eviction (2-slot context), Disk persistence, Async Job Queue, Kernel Directives |
 | **Procedural Generator** | `scenarios/procedural_generator.py` | Dynamic POMDP scenario builder: 3 typologies × 3 difficulties, unique IDs per episode |
-| **Adversary Agent** | `scenarios/adversary_agent.py` | ★ NEW (2026-04-23) LLM-backed evasive scenario generator (mule rings, pass-throughs, phantom invoices) |
-| **Battle Orchestrator** | `train_adversary.py` | ★ NEW (2026-04-23) GAN-style adversarial loop that tests the Defender and saves evasive graphs to SQLite |
-| **Adversarial DB** | `adversarial_successes.db` | ★ NEW (2026-04-23) SQLite database storing failed scenarios (negative examples) |
+| **Adversary Agent** | `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator (local Llama-3.1-8B or procedural fallback) |
+| **Battle Orchestrator** | `train_adversary.py` | GAN-style adversarial loop that tests the Defender and saves evasive graphs to SQLite |
+| **Adversarial DB** | `adversarial_successes.db` | SQLite database storing failed scenarios (negative examples for DPO) |
 | **Compliance Manual** | `scenarios/compliance_manual.py` | Searchable AML rule corpus for kernel updates |
-| **Environment** | `server/aml_environment.py` | Core environment: 15 tool handlers + State Manager integration |
+| **Environment** | `server/aml_environment.py` | Core environment: 18 tool handlers + State Manager integration |
 | **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + terminal composite score [-1.0, +1.0] |
 | **OpenEnv Server** | `openenv_server.py` | Production FastAPI entrypoint — OpenEnv SDK `create_app()` + standalone fallback |
 | **Legacy Server** | `server/app.py` | FastAPI HTTP server (dual-mode: OpenEnv / standalone, used by trainers) |
-| **Client** | `client.py` | HTTP client with all 15 tool wrappers |
+| **Client** | `client.py` | HTTP client with all 18 tool wrappers |
 | **Inference** | `inference.py` | ReAct agent loop with OS-mechanic awareness |
 | **PPO Trainer (L4)** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
 | **GRPO Trainer (L4)** | `train_grpo.py` | Group Relative Policy Optimization (no critic, group-relative advantage) |
@@ -57,11 +57,13 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
    - `search_compliance_manual(query)` → find AML rules
    - `update_system_prompt(rule)` → inject into active kernel directives (+0.15 reward, hard-capped at 2 per episode)
 
-### Tool Roster (15 total)
+### Tool Roster (18 Total)
 
-**Domain (10):** review_alert, get_customer_profile, query_transactions, check_watchlist, trace_network, check_source_of_funds, check_market_price, assess_risk, file_sar, close_alert
+**Domain Investigation Tools (9):** `review_alert`, `get_customer_profile`, `query_transactions`, `check_watchlist`, `trace_network`, `check_source_of_funds`, `check_market_price`, `assess_risk`, `file_sar` / `close_alert` (terminal)
 
-**OS-Mechanic (5):** write_to_case_file, request_wire_trace, retrieve_async_result, search_compliance_manual, update_system_prompt
+**Phase 3 — FinCEN Investigation Tools (3):** `check_device_overlap` (mule-ring detection), `verify_customs_invoice` (TBML phantom shipments), `query_beneficial_ownership` (UBO shell-layer tracing)
+
+**OS-Mechanic Tools (6):** `write_to_case_file`, `request_wire_trace`, `retrieve_async_result`, `search_compliance_manual`, `update_system_prompt`, `check_market_price`
 
 ### Reward System
 
@@ -121,6 +123,47 @@ The backend is invisible by design — an LLM managing RAM eviction and async qu
 The frontend renders a **5th panel** (`CurriculumPanel.tsx`) below the terminal when `curriculum.enabled === true`, showing regret bars, difficulty gauges, and buffer coverage.
 
 **Frontend replay:** `demo_eval.py` captures per-step AGUI snapshots as `step_NNN.json` files in `demo_output/`. The Next.js frontend reads these sequentially to replay the full investigation as an animated OS simulation — judges see the agent's RAM filling, data paging to disk, async jobs completing, and kernel directives accumulating in real time.
+
+---
+
+## Multi-Agent Adversarial Training
+
+Memex includes a **GAN-style adversarial training loop** where a **Launderer** agent (adversary) generates evasive AML scenarios and a **Defender** agent (PPO policy) must crack them.
+
+### Architecture
+
+```
+┌─────────────────────────┐                   ┌─────────────────────────┐
+│    LAUNDERER AGENT       │                   │     DEFENDER AGENT      │
+│  (adversary_agent.py)    │    scenario       │      (train_ppo.py)     │
+│                          │ ───────────────>  │                         │
+│  Action space:           │                   │  Action space:          │
+│   • Shells, hops, decoys │    defender       │   • 18 investigation    │
+│   • Jurisdictions        │ <───────────────  │     tools               │
+│   • Timing patterns      │    reward         │                         │
+│   • Evasion techniques   │                   │  Terminal reward from   │
+│                          │                   │  grader.py              │
+└──────────┬──────────────┘                   └─────────────────────────┘
+           │
+           │  If defender fails (score < threshold)
+           ▼
+   ┌───────────────────────┐
+   │ adversarial_successes │
+   │        .db            │ ──── DPO pipeline negative examples
+   │  (SQLite + WAL mode)  │
+   └───────────────────────┘
+```
+
+### Loop (orchestrated by `train_adversary.py`)
+
+1. **Adversary Generation:** The launderer generates a fully-specified AML scenario — transaction graph, entity profiles, evasion techniques (mule rings, shell pass-throughs, phantom invoices). Uses a local Llama-3.1-8B model or procedural fallback (no API key needed).
+2. **Defender Evaluation:** The defender runs a full investigation in the Memex environment. Terminal reward is computed by `grader.py`.
+3. **Persistence:** If the defender underperforms (score < threshold), the evasive scenario is recorded in `adversarial_successes.db` with metadata (difficulty, typology, reward, evasion techniques).
+4. **Continuous Learning:** These high-evasion scenarios seed the DPO pipeline as hard negative examples, hardening the agent against novel typologies.
+
+### Theoretical Motivation
+
+The launderer-vs-defender loop approximates a **zero-sum Markov game**. The launderer's reward is the negative of the defender's terminal score, creating a self-generated difficulty curriculum that drives robustness without requiring hand-crafted hard scenarios.
 
 ---
 
@@ -263,6 +306,13 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 
 ## Recent Changes
 
+### 2026-04-24
+
+1. **Documentation rewrite:** Corrected tool count from 15 to 18 (added Phase 3 FinCEN tools), verified terminal reward weights against `grader.py`, unified all docs as single source of truth.
+2. **Adversary Agent:** Replaced GPT-4o-mini dependency with local Llama-3.1-8B model for offline adversarial generation.
+3. **PLR Curriculum Engine:** Added Prioritized Level Replay (`curriculum/plr_engine.py`) with regret-weighted scenario sampling, 5th AGUI panel (`CurriculumPanel.tsx`), and `--use-plr` flag.
+4. **GRPO Trainer:** Added `train_grpo.py` — critic-free Group Relative Policy Optimization with group-relative advantage (G=4).
+
 ### 2026-04-23
 
 1. **OpenEnv Server (`openenv_server.py`):** Production-grade FastAPI wrapper using OpenEnv SDK `create_app()` with standalone fallback. Boot-time validation, structured logging, HF Spaces ready (port 7860).
@@ -283,7 +333,7 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 
 ### 2026-04-20
 
-1. **Codebase sanitization:** Removed duplicate type definitions from `app.py`, updated `client.py` with all 15 tools, rewrote README to reflect Memex OS-Agent architecture
+1. **Codebase sanitization:** Removed duplicate type definitions from `app.py`, updated `client.py` with all tools, rewrote README to reflect Memex OS-Agent architecture
 2. **Git consolidation:** Resolved stuck rebase, recovered all OS-mechanic features to `main`
 3. **PPO trainer:** Custom step-level PPO with Unsloth 4-bit + LoRA, L4-optimized (peak ~10GB VRAM)
 4. **70B scaling pivot:** `train_ppo_70b.py` with DeepSpeed ZeRO-3 for multi-node A100 cluster

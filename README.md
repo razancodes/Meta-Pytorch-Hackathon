@@ -62,7 +62,7 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │                    ENVIRONMENT SERVER (FastAPI)                       │
 │                                                                      │
 │  AMLEnvironment  ────────────  StateManager                          │
-│  15 Tool Handlers              • RAM (2 slots) + Disk               │
+│  18 Tool Handlers              • RAM (2 slots) + Disk               │
 │  Action Routing                • Async Queue (ETAs)                 │
 │  Scenario Data                 • Kernel Directives                  │
 │       │                              │                               │
@@ -72,7 +72,7 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │                                                                      │
 │  ┌───────────────────────────────────────────────────────────────┐   │
 │  │  Procedural Generator: 3 typologies × 3 difficulties         │   │
-│  │  Adversary Agent: LLM generates evasive, complex graphs      │   │
+│  │  Adversary Agent: Local Llama-3.1-8B evasive graph generator │   │
 │  └───────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
@@ -180,19 +180,18 @@ python demo_eval.py --model checkpoints/best
 
 ---
 
-## Tool Roster (15 Tools)
+## Tool Roster (18 Tools)
 
-| Domain Tools (10) | OS-Mechanic Tools (5) |
-|:---|:---|
-| `review_alert` — Alert details | `write_to_case_file` — Page to disk (+0.10, cap 3) |
-| `get_customer_profile` — KYC data | `request_wire_trace` — Async job (2-4 step ETA) |
-| `query_transactions` — Transaction history | `retrieve_async_result` — Fetch completed job |
-| `check_watchlist` — OFAC/PEP/UN screening | `search_compliance_manual` — Find AML rules |
-| `trace_network` — Entity connections | `update_system_prompt` — Kernel inject (+0.15, cap 2) |
-| `check_source_of_funds` — Source verification | |
-| `check_market_price` — Trade price comparison | |
-| `assess_risk` — Risk scoring | |
-| `file_sar` / `close_alert` — **Terminal** | |
+| Domain Tools (9) | Phase 3 — FinCEN (3) | OS-Mechanic Tools (6) |
+|:---|:---|:---|
+| `review_alert` — Alert details | `check_device_overlap` — Mule rings | `write_to_case_file` — Page to disk (+0.10, cap 3) |
+| `get_customer_profile` — KYC data | `verify_customs_invoice` — Phantom shipments | `request_wire_trace` — Async job (2-4 step ETA) |
+| `query_transactions` — Transaction history | `query_beneficial_ownership` — UBO tracing | `retrieve_async_result` — Fetch completed job |
+| `check_watchlist` — OFAC/PEP/UN screening | | `search_compliance_manual` — Find AML rules |
+| `trace_network` — Entity connections | | `update_system_prompt` — Kernel inject (+0.15, cap 2) |
+| `check_source_of_funds` — Source verification | | `check_market_price` — Trade price comparison |
+| `assess_risk` — Risk scoring | | |
+| `file_sar` / `close_alert` — **Terminal** | | |
 
 ---
 
@@ -201,7 +200,7 @@ python demo_eval.py --model checkpoints/best
 **Per-Step** (dense signal at every tool call):
 
 | Event | Reward | OS Concept |
-|-------|--------|-----------|
+|-------|--------|-----------:|
 | Action cost | -0.02 | — |
 | Redundant call | -0.03 | — |
 | Unique tool | +0.03 | — |
@@ -241,7 +240,7 @@ python demo_eval.py --model checkpoints/best
 ├── openenv_server.py            # ★ OpenEnv FastAPI entrypoint (create_app + fallback)
 ├── models.py                    # Pydantic types (single source of truth)
 ├── state_manager.py             # OS mechanics engine
-├── client.py                    # HTTP client (15 tool wrappers)
+├── client.py                    # HTTP client (18 tool wrappers)
 ├── inference.py                 # ReAct agent (OS-aware)
 ├── train_ppo.py                 # PPO trainer (L4, 8B) + PLR curriculum
 ├── train_grpo.py                # GRPO trainer (L4, 8B) — no critic, group-relative
@@ -258,14 +257,14 @@ python demo_eval.py --model checkpoints/best
 │   └── oracle.py                # Proxy regret (1.0 - score)
 ├── scenarios/
 │   ├── procedural_generator.py  # POMDP graph builder
-│   ├── adversary_agent.py       # LLM-backed evasive scenario generator
+│   ├── adversary_agent.py       # Local Llama-3.1-8B evasive scenario generator
 │   ├── compliance_manual.py     # Searchable rule corpus
 │   └── base.py                  # Scenario ABC
 ├── graders/
 │   └── grader.py                # Dense reward engine
 ├── server/
 │   ├── app.py                   # Legacy FastAPI (used by trainers)
-│   └── aml_environment.py       # Core env (15 tools + OS mechanics)
+│   └── aml_environment.py       # Core env (18 tools + OS mechanics)
 ├── frontend/
 │   ├── components/case/
 │   │   ├── CaseTerminal.tsx     # Main investigation terminal
