@@ -16,8 +16,17 @@ from __future__ import annotations
 
 import sys
 import os
+import shutil
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Flush all __pycache__ to prevent running stale bytecache after git pull
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _dirpath, _dirnames, _filenames in os.walk(_project_root):
+    if "__pycache__" in _dirnames:
+        shutil.rmtree(os.path.join(_dirpath, "__pycache__"), ignore_errors=True)
+        _dirnames.remove("__pycache__")
+print("[setup] Flushed all __pycache__ directories")
+
+sys.path.insert(0, _project_root)
 
 from models import AMLAction
 from scenarios.procedural_generator import ScenarioGenerator, GeneratedScenario
@@ -175,6 +184,10 @@ obs = env.step(AMLAction(
     },
 ))
 print(f"\n  FINAL SCORE: {obs.reward:+.4f}")
+if obs.tool_result and isinstance(obs.tool_result, dict):
+    print(f"  Detection: {obs.tool_result.get('detection', 'N/A')}")
+    print(f"  Grader Breakdown: {obs.tool_result.get('grader_breakdown', 'N/A')}")
+    print(f"  tool_result.final_score: {obs.tool_result.get('final_score', 'N/A')}")
 assert obs.done
 assert obs.reward > 0.5, f"Expected >0.5, got {obs.reward}"
 ok(f"Procedural structuring PASSED (score={obs.reward:+.4f})")
