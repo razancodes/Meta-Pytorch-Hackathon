@@ -387,11 +387,20 @@ class ScenarioGenerator:
         "hard":   {"decoy_profiles": 3, "decoy_txns": 8},
     }
 
-    def __init__(self, seed: Optional[int] = None) -> None:
+    def __init__(self, seed: Optional[int] = None, clean_ratio: float = 0.3) -> None:
+        """Initialize the scenario generator.
+
+        Args:
+            seed: Random seed for reproducibility.
+            clean_ratio: Fraction of scenarios that are clean (non-suspicious).
+                         Default 0.3 means 30% clean, 70% suspicious.
+                         Set to 0.0 for all-suspicious (Launderer training).
+        """
         if seed is not None:
             random.seed(seed)
         self._txn_counter = 0
         self._ent_counter = 0
+        self._clean_ratio = max(0.0, min(1.0, clean_ratio))
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -401,18 +410,20 @@ class ScenarioGenerator:
         self,
         difficulty: Optional[str] = None,
         typology: Optional[str] = None,
+        force_clean: Optional[bool] = None,
     ) -> GeneratedScenario:
         """Generate a complete scenario.
 
         Args:
             difficulty: easy | medium | hard (random if None).
             typology: structuring | layering | trade_based_ml (random if None).
+            force_clean: If True, always generate clean. If False, always
+                         suspicious. If None, use clean_ratio probability.
 
         Returns:
             GeneratedScenario conforming to BaseScenario.
         """
         diff = difficulty or random.choice(self.DIFFICULTIES)
-        typo = typology or random.choice(self.TYPOLOGIES)
 
         self._txn_counter = random.randint(0, 9999)
         self._ent_counter = random.randint(0, 9999)
@@ -421,14 +432,26 @@ class ScenarioGenerator:
         epoch_start = datetime(2024, 1, 1) + timedelta(days=random.randint(0, 180))
         epoch_end = epoch_start + timedelta(days=random.randint(30, 120))
 
-        if typo == "structuring":
-            data = self._gen_structuring(diff, epoch_start, epoch_end)
-        elif typo == "layering":
-            data = self._gen_layering(diff, epoch_start, epoch_end)
-        elif typo == "trade_based_ml":
-            data = self._gen_tbml(diff, epoch_start, epoch_end)
+        # Decide clean vs suspicious
+        if force_clean is True:
+            is_clean = True
+        elif force_clean is False:
+            is_clean = False
         else:
-            raise ValueError(f"Unknown typology: {typo}")
+            is_clean = random.random() < self._clean_ratio
+
+        if is_clean:
+            data = self._gen_clean(diff, epoch_start, epoch_end)
+        else:
+            typo = typology or random.choice(self.TYPOLOGIES)
+            if typo == "structuring":
+                data = self._gen_structuring(diff, epoch_start, epoch_end)
+            elif typo == "layering":
+                data = self._gen_layering(diff, epoch_start, epoch_end)
+            elif typo == "trade_based_ml":
+                data = self._gen_tbml(diff, epoch_start, epoch_end)
+            else:
+                raise ValueError(f"Unknown typology: {typo}")
 
         # Inject decoy noise into the scenario
         noise_cfg = self._NOISE[diff]
@@ -437,11 +460,195 @@ class ScenarioGenerator:
         # Metadata
         data["_meta"] = {
             "difficulty": diff,
-            "typology": typo,
+            "typology": data["ground_truth"].get("typology", "clean"),
+            "is_suspicious": data["ground_truth"]["is_suspicious"],
             "generated_at": datetime.utcnow().isoformat(),
         }
 
         return GeneratedScenario(data)
+
+    # ================================================================== #
+    # CLEAN (BENIGN) SCENARIO GENERATOR                                    #
+    # ================================================================== #
+
+    def _gen_clean(
+        self, diff: str, epoch_start: datetime, epoch_end: datetime,
+    ) -> Dict[str, Any]:
+        """Generate a clean (non-suspicious) scenario.
+
+        These are legitimate customers with normal transaction patterns.
+        The alert is a false alarm triggered by a routine rule (e.g.,
+        large but documented business transfer, routine review).
+        Ground truth: is_suspicious=False, correct_decision=close_alert.
+        """
+        # --- Subject ---
+        subject_id = self._next_cust_id()
+        subject_name = _random_name()
+        account_id = self._next_acc_id()
+        branch = random.choice(_BRANCH_NAMES)
+        occupation = random.choice([
+            "Software Engineer", "Doctor", "Financial Analyst",
+            "Architect", "Marketing Manager", "University Professor",
+            "Pharmacist", "Civil Engineer", "Accountant", "Dentist",
+        ])
+        income = random.randint(65000, 180000)
+
+        # --- Legitimate transaction pattern ---
+        num_txns = random.randint(3, 6)
+        txn_amounts = [
+            round(random.uniform(500, 15000), 2) for _ in range(num_txns)
+        ]
+        txn_dates = _dates_in_window(epoch_start, num_txns, window_days=30)
+
+        transactions = []
+        for i in range(num_txns):
+            transactions.append({
+                "txn_id": self._next_txn_id("CLN"),
+                "date": txn_dates[i],
+                "type": random.choice(["wire_transfer", "ach_transfer", "check_deposit"]),
+                "amount": txn_amounts[i],
+                "currency": "USD",
+                "from_account": account_id,
+                "to_account": self._next_acc_id(),
+                "from_entity": subject_id,
+                "to_entity": self._next_cust_id(),
+                "direction": "outgoing",
+                "description": random.choice([
+                    "Monthly rent payment",
+                    "Invoice payment - consulting services",
+                    "Employee payroll transfer",
+                    "Vendor payment for supplies",
+                    "Annual insurance premium",
+                    "Real estate tax payment",
+                    "Investment contribution",
+                    "Business equipment purchase",
+                ]),
+                "branch": branch,
+            })
+
+        # --- Alert (routine/false alarm) ---
+        alert_id = self._next_alert_id()
+        total = sum(txn_amounts)
+        alert = {
+            "alert_id": alert_id,
+            "alert_date": (epoch_start + timedelta(days=32)).strftime("%Y-%m-%d"),
+            "alert_type": random.choice([
+                "Routine Large Transaction Review",
+                "New Account Activity Monitoring",
+                "Periodic Customer Review",
+                "Unusual Transaction Volume",
+            ]),
+            "risk_score": random.randint(15, 40),
+            "priority": "LOW",
+            "customer_id": subject_id,
+            "account_id": account_id,
+            "summary": (
+                f"Customer {subject_id} ({subject_name}) flagged for routine review. "
+                f"{num_txns} transactions totalling ${total:,.2f} over 30 days. "
+                f"Customer is a {occupation} with documented income of ${income:,}/year. "
+                f"All transactions appear consistent with stated occupation and income."
+            ),
+            "flagged_rule": "RULE-REVIEW-001: Periodic customer activity review",
+            "branch": branch,
+        }
+
+        # --- Customer profile (clean, documented) ---
+        profiles = {
+            subject_id: {
+                "customer_id": subject_id,
+                "name": subject_name,
+                "type": "individual",
+                "account_type": "Personal Checking",
+                "occupation": occupation,
+                "stated_income": income,
+                "account_age_days": random.randint(730, 3650),
+                "jurisdiction": random.choice(_JURISDICTIONS_CLEAN),
+                "risk_rating": "LOW",
+                "kyc_status": "verified",
+                "account_id": account_id,
+                "branch": branch,
+            },
+        }
+
+        # --- Clean watchlist ---
+        watchlist = {
+            subject_id: {
+                "pep_match": False,
+                "sanctions_match": False,
+                "adverse_media": False,
+                "notes": f"No adverse findings for {subject_name}.",
+            },
+        }
+
+        # --- Simple network (no suspicious connections) ---
+        network = {
+            "nodes": [
+                {"id": subject_id, "type": "individual", "name": subject_name},
+            ],
+            "edges": [],
+        }
+
+        # --- Source of funds (documented) ---
+        sof = {
+            subject_id: {
+                "primary_source": f"Employment - {occupation}",
+                "annual_income": income,
+                "documentation_status": "verified",
+                "notes": f"Income verified via employer letter and tax returns.",
+            },
+        }
+
+        # --- Device fingerprints (clean) ---
+        device_fingerprints = {
+            subject_id: [{
+                "device_id": f"DEV-{random.randint(1000,9999)}",
+                "platform": random.choice(["iOS", "Android", "Desktop"]),
+                "ip_address": f"192.168.{random.randint(1,254)}.{random.randint(1,254)}",
+                "geo_location": random.choice(_JURISDICTIONS_CLEAN),
+                "is_vpn": False,
+                "first_seen": epoch_start.strftime("%Y-%m-%d"),
+            }],
+        }
+
+        # --- Beneficial ownership (simple) ---
+        beneficial_ownership = {
+            subject_id: [{
+                "entity_id": subject_id,
+                "entity_name": subject_name,
+                "entity_type": "individual",
+                "ownership_pct": 100.0,
+                "jurisdiction": random.choice(_JURISDICTIONS_CLEAN),
+                "hop_count": 0,
+                "is_ubo": True,
+                "relationship": "self",
+            }],
+        }
+
+        # --- Ground truth: NOT SUSPICIOUS ---
+        ground_truth = {
+            "is_suspicious": False,
+            "correct_decision": "close_alert",
+            "typology": "clean",
+            "key_entities": [],
+            "excluded_entities": [subject_id],
+            "key_findings": [],
+            "red_flags": [],
+            "ubo_entity_id": None,
+        }
+
+        return {
+            "initial_alert": alert,
+            "customer_profiles": profiles,
+            "transactions": transactions,
+            "watchlist_results": watchlist,
+            "network_graph": network,
+            "source_of_funds": sof,
+            "ground_truth": ground_truth,
+            "market_data": {},
+            "device_fingerprints": device_fingerprints,
+            "customs_invoices": {},
+            "beneficial_ownership": beneficial_ownership,
+        }
 
     # ------------------------------------------------------------------ #
     # ID generators                                                        #
@@ -683,6 +890,7 @@ class ScenarioGenerator:
             gt_red_flags.append("Shared device fingerprint across accounts — potential mule ring")
 
         ground_truth = {
+            "is_suspicious": True,
             "correct_decision": "file_sar",
             "typology": "structuring",
             "key_entities": [subject_id],
@@ -1090,6 +1298,7 @@ class ScenarioGenerator:
             gt_red_flags.append("Multiple shell entities share same VPN IP address")
 
         ground_truth = {
+            "is_suspicious": True,
             "correct_decision": "file_sar",
             "typology": "layering",
             "key_entities": key_entities,
@@ -1602,6 +1811,7 @@ class ScenarioGenerator:
 
         # --- Ground truth ---
         ground_truth = {
+            "is_suspicious": True,
             "correct_decision": "file_sar",
             "typology": "trade_based_ml",
             "key_entities": [subject_id, supplier_id, beneficial_owner],
@@ -1742,11 +1952,20 @@ def generate_scenario(
     difficulty: Optional[str] = None,
     typology: Optional[str] = None,
     seed: Optional[int] = None,
+    clean_ratio: float = 0.3,
+    force_clean: Optional[bool] = None,
 ) -> GeneratedScenario:
-    """Module-level convenience function to generate a scenario."""
+    """Module-level convenience function to generate a scenario.
+
+    Args:
+        clean_ratio: Fraction of scenarios that are clean (default 0.3).
+        force_clean: Override clean_ratio. True=always clean, False=always suspicious.
+    """
     global _default_generator
     if seed is not None:
-        _default_generator = ScenarioGenerator(seed=seed)
+        _default_generator = ScenarioGenerator(seed=seed, clean_ratio=clean_ratio)
     if _default_generator is None:
-        _default_generator = ScenarioGenerator()
-    return _default_generator.generate(difficulty=difficulty, typology=typology)
+        _default_generator = ScenarioGenerator(clean_ratio=clean_ratio)
+    return _default_generator.generate(
+        difficulty=difficulty, typology=typology, force_clean=force_clean,
+    )

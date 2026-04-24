@@ -74,7 +74,7 @@ class PLREngine:
     def __init__(
         self,
         buffer_size: int = 200,
-        temperature: float = 0.1,
+        temperature: float = 0.5,
         staleness_threshold: int = 50,
         random_scenario_prob: float = 0.2,
     ):

@@ -2,34 +2,29 @@
 """
 Memex OS-Agent Benchmark — GRPO Training (L4-Optimized).
 
+⚠️  EXPERIMENTAL / ABLATION ONLY — NOT PRODUCTION-READY  ⚠️
+
+The production training path is train_ppo.py. This GRPO trainer is provided
+for research comparison and ablation studies only.
+
+Known deficiencies vs. PPO:
+  1. No importance-ratio clipping — uses raw REINFORCE -(log_prob * advantage),
+     making training vulnerable to large policy updates.
+  2. KL penalty uses |KL| (absolute value) instead of proper forward KL,
+     which penalizes the policy equally for moving toward or away from the
+     reference — incorrect directionality.
+  3. Loss is divided by total_steps, coupling gradient magnitude to group size
+     instead of using a fixed effective batch size.
+
 Group Relative Policy Optimization: eliminates the critic network entirely.
 Instead of a value function V(s), GRPO averages rewards across G sampled
 responses and uses that as the baseline:
 
     A_i = (r_i - mean(r_1..r_G)) / std(r_1..r_G)
 
-Benefits over PPO for Memex:
-  - No critic = ~15% less VRAM on L4 (from 10GB → ~8.5GB peak)
-  - More episodes per hour (no critic forward pass)
-  - Better for sparse reward environments (terminal reward is sparse)
-
-Architecture:
-  ┌─────────────────────────────────────────────────────────────┐
-  │  Unsloth 4-bit LLM + LoRA adapters  (~5 GB)                │
-  │  ┌─────────────────────┐  ┌────────────────────────┐       │
-  │  │ G Trajectory Rollouts│→ │ GRPO Group-Relative    │       │
-  │  │ (inference, no grad) │  │ Advantage + KL penalty │       │
-  │  └─────────────────────┘  └────────────────────────┘       │
-  │              ↑                       ↓                      │
-  │       AMLEnvironment            LoRA weight update          │
-  │    (PLR curriculum)         (AdamW, grad accum)            │
-  └─────────────────────────────────────────────────────────────┘
-
 Usage:
-  python train_grpo.py --dry-run              # quick 2-iter test
-  python train_grpo.py --iterations 150       # real training
-  python train_grpo.py --iterations 150 --use-plr  # with PLR curriculum
-  python train_grpo.py --lora-r 32 --use-plr  # rank ablation
+  python train_grpo.py --experimental --dry-run
+  python train_grpo.py --experimental --iterations 150 --use-plr
 """
 
 from __future__ import annotations
@@ -183,12 +178,18 @@ class MemexGRPO:
 
     def rollout(
         self, env: AMLEnvironment, difficulty: str, typology: str,
+        seed: Optional[int] = None,
     ) -> Tuple[List[StepData], EpisodeStats]:
-        """Collect one full episode trajectory (no gradients)."""
+        """Collect one full episode trajectory (no gradients).
+
+        Args:
+            seed: If provided, seeds the environment RNG so G rollouts
+                  in the same group see the same generated scenario.
+        """
         from unsloth import FastLanguageModel
         FastLanguageModel.for_inference(self.model)
 
-        obs = env.reset(task_id=difficulty)
+        obs = env.reset(task_id=difficulty, seed=seed)
         steps: List[StepData] = []
 
         for step_num in range(1, self.cfg.max_steps + 1):
@@ -268,11 +269,25 @@ class MemexGRPO:
         if G == 0:
             return {"grpo/loss": 0.0, "grpo/kl": 0.0, "grpo/entropy": 0.0, "grpo/steps_trained": 0}
 
-        # ── Group-relative advantages ──
+        # ── Per-step discounted returns, normalized across group ──
         scores = torch.tensor([s for _, s in group_trajectories], dtype=torch.float32)
-        score_mean = scores.mean()
-        score_std = scores.std() + 1e-8
-        advantages = ((scores - score_mean) / score_std).tolist()
+        for g_idx, (steps, _) in enumerate(group_trajectories):
+            T = len(steps)
+            G_val = 0.0
+            for t in reversed(range(T)):
+                G_val = steps[t].reward + 0.99 * G_val
+                steps[t].advantage = G_val  # temporarily store return
+
+        # Normalize returns across all steps from all G trajectories
+        all_returns = []
+        for steps, _ in group_trajectories:
+            all_returns.extend([s.advantage for s in steps])
+        ret_mean = sum(all_returns) / max(len(all_returns), 1)
+        ret_std = max((sum((r - ret_mean)**2 for r in all_returns) / max(len(all_returns), 1))**0.5, 1e-8)
+
+        for steps, _ in group_trajectories:
+            for s in steps:
+                s.advantage = (s.advantage - ret_mean) / ret_std
 
         total_loss_val = 0.0
         total_kl_val = 0.0
@@ -281,7 +296,7 @@ class MemexGRPO:
 
         self.optimizer.zero_grad()
 
-        for g_idx, ((steps, _), adv) in enumerate(zip(group_trajectories, advantages)):
+        for g_idx, (steps, _) in enumerate(group_trajectories):
             for i, step in enumerate(steps):
                 try:
                     # Current policy log prob (WITH gradients)
@@ -299,14 +314,20 @@ class MemexGRPO:
                     # Entropy bonus
                     entropy = -(log_probs.exp() * log_probs).sum(-1).mean()
 
-                    # Policy gradient with group-relative advantage
-                    adv_tensor = torch.tensor(adv, device=self.device)
+                    # DEFICIENCY-1: Raw REINFORCE — no importance ratio clipping.
+                    # PPO uses clamp(ratio, 1-eps, 1+eps) * advantage for trust-region safety.
+                    # This is vulnerable to large, destabilizing policy updates.
+                    adv_tensor = torch.tensor(step.advantage, device=self.device)
                     policy_loss = -(new_lp * adv_tensor)
 
-                    # KL penalty against frozen base
+                    # DEFICIENCY-2: Uses |KL| instead of proper forward KL.
+                    # This penalizes the policy equally for moving toward or away from
+                    # the reference distribution — incorrect directionality.
                     kl = (new_lp - step.ref_log_prob).clamp(-10, 10)
-                    kl_loss = self.cfg.kl_coef * kl
+                    kl_loss = self.cfg.kl_coef * kl.abs()
 
+                    # DEFICIENCY-3: Loss divided by total_steps couples gradient magnitude
+                    # to group size. A group of 8 gets half the gradient of a group of 4.
                     total_steps = sum(len(s) for s, _ in group_trajectories)
                     loss = (policy_loss + kl_loss - self.cfg.entropy_coef * entropy) / max(total_steps, 1)
                     loss.backward()
@@ -350,6 +371,43 @@ class MemexGRPO:
         self.model.save_pretrained(path)
         self.tokenizer.save_pretrained(path)
         print(f"  💾 Saved: {path}")
+
+    # ── Stable Checkpoint (Auto-Revert) ─────────────────────────────────
+
+    def save_stable_state(self, path: str) -> None:
+        """Save LoRA weights + optimizer state as 'last known good'."""
+        os.makedirs(path, exist_ok=True)
+        lora_state = {
+            k: v.cpu().clone()
+            for k, v in self.model.named_parameters() if v.requires_grad
+        }
+        torch.save(lora_state, os.path.join(path, "lora_state.pt"))
+        torch.save(self.optimizer.state_dict(), os.path.join(path, "optim_state.pt"))
+        torch.save({
+            "entropy_coef": self.cfg.entropy_coef,
+            "temperature": self.cfg.temperature,
+            "lr": self.cfg.lr,
+        }, os.path.join(path, "hyperparams.pt"))
+
+    def load_stable_state(self, path: str) -> bool:
+        """Reload LoRA weights from stable checkpoint. Returns True on success."""
+        lora_path = os.path.join(path, "lora_state.pt")
+        if not os.path.exists(lora_path):
+            return False
+        state = torch.load(lora_path, map_location=self.device, weights_only=True)
+        for name, param in self.model.named_parameters():
+            if name in state:
+                param.data.copy_(state[name].to(self.device))
+        return True
+
+    def rebuild_optimizer(self, remaining_iters: int = 0) -> None:
+        """Recreate optimizer + scheduler with current config (after revert)."""
+        t_max = remaining_iters if remaining_iters > 0 else self.cfg.total_iterations
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        self.optimizer = torch.optim.AdamW(trainable, lr=self.cfg.lr)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=t_max, eta_min=self.cfg.lr * 0.1,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -422,6 +480,14 @@ def train(cfg: GRPOConfig) -> None:
     eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
     best_score = -float("inf")
 
+    # ── Auto-Revert State ──
+    stable_path = os.path.join(cfg.output_dir, "_stable_grpo")
+    stable_saved = False
+    low_entropy_streak = 0
+    low_score_streak = 0
+    revert_count = 0
+    max_reverts = 5
+
     for it in range(1, iters + 1):
         t0 = time.time()
         iter_scores = []
@@ -435,13 +501,14 @@ def train(cfg: GRPOConfig) -> None:
                 diff = random.choice(cfg.difficulties)
                 typo = random.choice(cfg.typologies)
 
-            # ── Collect G rollouts for GRPO group ──
+            # ── Collect G rollouts for GRPO group (same scenario via seed) ──
             group_trajectories: List[Tuple[List[StepData], float]] = []
             group_scores = []
+            scenario_seed = random.randint(0, 2**31)  # shared seed for all G rollouts
 
             for g in range(cfg.group_size):
                 try:
-                    steps, stats = grpo.rollout(env, diff, typo)
+                    steps, stats = grpo.rollout(env, diff, typo, seed=scenario_seed)
                     group_trajectories.append((steps, stats.score))
                     group_scores.append(stats.score)
                 except Exception as e:
@@ -487,6 +554,85 @@ def train(cfg: GRPOConfig) -> None:
             f"    VRAM: {vram_status()}  |  {elapsed:.0f}s\n"
         )
 
+        # ── Entropy Heartbeat Monitor (Auto-Revert) ──────────────────
+        entropy = grpo_stats["grpo/entropy"]
+        kl = grpo_stats["grpo/kl"]
+
+        if entropy < 0.01:
+            low_entropy_streak += 1
+        else:
+            low_entropy_streak = 0
+
+        if mean_score <= 0.0:
+            low_score_streak += 1
+        else:
+            low_score_streak = 0
+
+        # Save stable checkpoint when training is healthy
+        if entropy > 0.05 and mean_score > 0.3:
+            grpo.save_stable_state(stable_path)
+            stable_saved = True
+
+        # Check for collapse
+        is_collapse = (
+            low_entropy_streak >= 2
+            or low_score_streak >= 2
+            or abs(kl) > 10.0
+        )
+
+        if is_collapse and stable_saved and revert_count < max_reverts:
+            revert_count += 1
+            print(
+                f"\n  ⚠️  COLLAPSE DETECTED (revert #{revert_count})  ⚠️\n"
+                f"    Trigger: entropy={entropy:.4f} | KL={kl:.4f} | "
+                f"score={mean_score:+.4f}\n"
+                f"    Purging VRAM and reloading stable checkpoint..."
+            )
+
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            success = grpo.load_stable_state(stable_path)
+            if not success:
+                print("    ❌ Failed to load stable state, continuing...")
+            else:
+                old_ec = cfg.entropy_coef
+                old_temp = cfg.temperature
+                old_lr = cfg.lr
+                cfg.entropy_coef = min(cfg.entropy_coef * 1.5, 0.20)
+                cfg.temperature = min(cfg.temperature + 0.1, 0.9)
+                cfg.lr = cfg.lr * 0.7
+                grpo.cfg = cfg
+
+                del grpo.optimizer, grpo.scheduler
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                grpo.rebuild_optimizer(remaining_iters=iters - it)
+
+                print(
+                    f"    ✅ Reverted successfully.\n"
+                    f"    entropy_coef: {old_ec:.4f} → {cfg.entropy_coef:.4f}\n"
+                    f"    temperature:  {old_temp:.2f} → {cfg.temperature:.2f}\n"
+                    f"    lr:           {old_lr:.2e} → {cfg.lr:.2e}\n"
+                )
+
+            low_entropy_streak = 0
+            low_score_streak = 0
+
+            if not cfg.dry_run:
+                import wandb
+                wandb.log({
+                    "revert/count": revert_count,
+                    "revert/entropy_coef": cfg.entropy_coef,
+                    "revert/temperature": cfg.temperature,
+                    "revert/lr": cfg.lr,
+                })
+
+            gc.collect()
+            torch.cuda.empty_cache()
+            continue
+
         # ── WandB ──
         if not cfg.dry_run:
             import wandb
@@ -496,6 +642,9 @@ def train(cfg: GRPOConfig) -> None:
                 **grpo_stats,
                 "perf/iter_seconds": elapsed,
                 "perf/vram_gb": torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
+                "stability/entropy_coef": cfg.entropy_coef,
+                "stability/temperature": cfg.temperature,
+                "stability/revert_count": revert_count,
             }
             if plr is not None:
                 log_dict.update(plr.get_wandb_metrics())
@@ -531,7 +680,11 @@ def train(cfg: GRPOConfig) -> None:
 # ═══════════════════════════════════════════════════════════════════════
 
 def main():
-    p = argparse.ArgumentParser(description="Memex GRPO Trainer")
+    p = argparse.ArgumentParser(
+        description="Memex GRPO Trainer (EXPERIMENTAL — use train_ppo.py for production)",
+    )
+    p.add_argument("--experimental", action="store_true",
+                   help="Required flag to acknowledge GRPO is experimental")
     p.add_argument("--model", default=PPOConfig.model_name)
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--lora-r", type=int, default=PPOConfig.lora_r)
@@ -545,6 +698,20 @@ def main():
     p.add_argument("--use-plr", action="store_true", default=False,
                    help="Enable PLR curriculum (adaptive scenario sampling)")
     args = p.parse_args()
+
+    if not args.experimental:
+        print("\n" + "=" * 60)
+        print("  WARNING: GRPO IS EXPERIMENTAL — NOT PRODUCTION-READY")
+        print("  Use train_ppo.py for production training.")
+        print("  To proceed anyway, re-run with: --experimental")
+        print("=" * 60 + "\n")
+        sys.exit(1)
+
+    print("\n" + "=" * 60)
+    print("  GRPO EXPERIMENTAL MODE")
+    print("  Known deficiencies: no clipping, |KL|, gradient coupling.")
+    print("  Results are for ablation/comparison only.")
+    print("=" * 60 + "\n")
 
     train(GRPOConfig(
         model_name=args.model, lr=args.lr, lora_r=args.lora_r,

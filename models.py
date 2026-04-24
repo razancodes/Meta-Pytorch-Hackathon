@@ -32,6 +32,20 @@ class AsyncJobStatus(str, Enum):
     RETRIEVED = "retrieved"
 
 
+class TypologyEnum(str, Enum):
+    """Shared typology enum used across procedural gen, launderer, and grader."""
+    STRUCTURING = "structuring"
+    LAYERING = "layering"
+    TRADE_BASED_ML = "trade_based_ml"
+    PASS_THROUGH = "pass_through"
+    MULE_RING = "mule_ring"
+    SANCTIONS_EVASION = "sanctions_evasion"
+
+    @classmethod
+    def values(cls) -> list:
+        return [e.value for e in cls]
+
+
 class SARTypology(str, Enum):
     """FinCEN-recognized AML typology classifications."""
     STRUCTURING = "structuring"
@@ -39,6 +53,7 @@ class SARTypology(str, Enum):
     TRADE_BASED_ML = "trade_based_ml"
     PASS_THROUGH = "pass_through"
     MULE_RING = "mule_ring"
+    SANCTIONS_EVASION = "sanctions_evasion"
     FALSE_POSITIVE = "false_positive"
 
 

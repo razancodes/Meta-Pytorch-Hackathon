@@ -1,31 +1,27 @@
 """
-Memex OS-Agent Benchmark — Adversarial "GAN-Style" Battle Orchestrator.
+Memex OS-Agent Benchmark — Adversarial Scenario Generator & Heuristic Filter.
 
-Runs the PPO Defender agent against Adversary-generated scenarios and persists
-winning adversary scenarios (where the Defender fails) to a SQLite database
-for later use in the DPO training pipeline.
+Generates evasive AML scenarios using an LLM adversary and filters them
+through a static heuristic scorer. Scenarios that bypass the heuristic
+(defender_score < threshold) are saved to SQLite for use as hard negatives
+in the DPO continuous-learning pipeline.
+
+IMPORTANT: This is NOT adversarial self-play or GAN-style co-evolution.
+The "defender" is a fixed heuristic function (run_defender_heuristic), not
+a neural network. No gradients flow through the defender. The adversary
+LLM itself is also not updated during this loop. This pipeline is an
+offline data curation tool for generating challenging DPO training pairs.
 
 Architecture:
-  1. Adversary Agent generates N evasive scenarios
-  2. Defender agent runs each scenario through AMLEnvironment
-  3. If Defender score < threshold → scenario saved to AdversarialSuccesses table
-  4. These "winning" adversary scenarios become negative examples in DPO training
+  1. Adversary LLM generates N evasive scenarios (no gradient, inference only)
+  2. Heuristic scorer evaluates scenario detectability (rule-based, ~5 checks)
+  3. If heuristic score < threshold → scenario saved to AdversarialSuccesses
+  4. Saved scenarios become hard negatives for DPO fine-tuning
+
+Future: --use-ppo-defender loads a trained PPO checkpoint for true self-play.
 
 Usage:
-    python train_adversary.py \
-        --episodes 20 \
-        --difficulty hard \
-        --threshold 0.3
-
-SQLite Schema (AdversarialSuccesses):
-    id              INTEGER PRIMARY KEY AUTOINCREMENT
-    scenario_json   TEXT NOT NULL
-    defender_score  REAL NOT NULL
-    adversary_model TEXT NOT NULL
-    typology        TEXT NOT NULL
-    difficulty      TEXT NOT NULL
-    evasion_techniques TEXT
-    created_at      TEXT NOT NULL
+    python train_adversary.py --episodes 20 --difficulty hard --threshold 0.3
 
 NOTE: This script does NOT touch train_ppo.py or train_ppo_70b.py.
 """
@@ -79,6 +75,7 @@ VALUES
 def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """Initialize the SQLite database and return a connection."""
     conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL;")  # MED-5: prevent 'database is locked' under concurrency
     conn.execute(_CREATE_TABLE_SQL)
     conn.commit()
     return conn
@@ -118,12 +115,16 @@ def save_adversary_win(
 # ---------------------------------------------------------------------------
 
 def run_defender_heuristic(scenario_data: Dict[str, Any]) -> float:
-    """Run a simple heuristic defender against the scenario.
+    """Run a static, rule-based heuristic scorer against the scenario.
 
-    This provides a baseline evaluation without requiring a full PPO model.
-    In production, replace this with the actual PPO agent checkpoint.
+    This is NOT a neural defender. It uses 5 hardcoded checks (typology
+    pattern matching, entity identification, red flag counting, noise
+    penalization) to estimate scenario detectability. The score determines
+    whether the scenario is "hard enough" to save as a DPO negative example.
 
-    Returns a score between 0.0 (complete failure) and 1.0 (perfect).
+    For true adversarial self-play, use --use-ppo-defender (not yet implemented).
+
+    Returns a score between 0.0 (undetectable) and 1.0 (easily detected).
     """
     gt = scenario_data.get("ground_truth", {})
     if not gt:
@@ -315,13 +316,13 @@ def run_battle(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Memex Adversarial Battle — GAN-style training loop",
+        description="Memex Adversarial Scenario Generator & Heuristic Filter",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     python train_adversary.py --episodes 20 --difficulty hard
     python train_adversary.py --openai --adversary-model gpt-4o-mini --typology mule_ring
-    python train_adversary.py --threshold 0.4 --episodes 50
+    python train_adversary.py --use-ppo-defender  # future: true self-play
         """,
     )
 
@@ -382,8 +383,21 @@ Examples:
         default=False,
         help="Use OpenAI API instead of local model (requires OPENAI_API_KEY)",
     )
+    parser.add_argument(
+        "--use-ppo-defender",
+        action="store_true",
+        default=False,
+        help="Use a trained PPO checkpoint as the defender (NOT YET IMPLEMENTED)",
+    )
 
     args = parser.parse_args()
+
+    if args.use_ppo_defender:
+        raise NotImplementedError(
+            "--use-ppo-defender is not yet implemented. The current pipeline uses "
+            "run_defender_heuristic() (rule-based). To implement true self-play, "
+            "load a PPO checkpoint and run full AMLEnvironment episodes as the defender."
+        )
 
     if args.openai:
         args.local = False

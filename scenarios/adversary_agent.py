@@ -184,16 +184,121 @@ class AdversaryAgent:
         if self.is_local:
             local_scenario = self._generate_via_local_llm(typo, difficulty)
             if local_scenario:
-                return self._normalize_to_scenario(local_scenario, typo, difficulty)
-            return self._generate_fallback(typo, difficulty)
+                result = self._normalize_to_scenario(local_scenario, typo, difficulty)
+            else:
+                result = self._generate_fallback(typo, difficulty)
+        else:
+            # API LLM generation
+            llm_scenario = self._generate_via_llm(typo, difficulty)
+            if llm_scenario:
+                result = self._normalize_to_scenario(llm_scenario, typo, difficulty)
+            else:
+                # Fallback: enhanced procedural generation
+                result = self._generate_fallback(typo, difficulty)
 
-        # API LLM generation
-        llm_scenario = self._generate_via_llm(typo, difficulty)
-        if llm_scenario:
-            return self._normalize_to_scenario(llm_scenario, typo, difficulty)
+        # Synthesize missing data fields (watchlist, network, SoF, UBO)
+        return self._synthesize_missing_data(result)
 
-        # Fallback: enhanced procedural generation
-        return self._generate_fallback(typo, difficulty)
+    @staticmethod
+    def _synthesize_missing_data(scenario: Dict[str, Any]) -> Dict[str, Any]:
+        """Populate empty watchlist, network, source_of_funds, and beneficial_ownership
+        from existing profiles and transactions so all env tools return useful data."""
+        profiles = scenario.get("customer_profiles", {})
+        transactions = scenario.get("transactions", [])
+        gt = scenario.get("ground_truth", {})
+        key_entities = set(gt.get("key_entities", []))
+        excluded = set(gt.get("excluded_entities", []))
+
+        # -- Watchlist: key entities get PEP/FATF hits, excluded get clean --
+        if not scenario.get("watchlist_results"):
+            wl: Dict[str, Any] = {}
+            for eid, prof in profiles.items():
+                jurisdiction = prof.get("jurisdiction", prof.get("nationality", "Unknown"))
+                if eid in key_entities:
+                    is_risky = jurisdiction in (
+                        "Seychelles", "BVI", "Cayman Islands", "Panama", "Vanuatu",
+                        "Myanmar", "Iran", "DPRK", "Syria", "Unknown",
+                    )
+                    wl[eid] = {
+                        "match": True,
+                        "lists": ["FATF-Monitored"] if is_risky else ["PEP"],
+                        "details": f"Flagged entity in {jurisdiction} — {'FATF-monitored jurisdiction' if is_risky else 'possible PEP connection'}.",
+                    }
+                else:
+                    wl[eid] = {"match": False, "lists": [], "details": "No matches"}
+            scenario["watchlist_results"] = wl
+
+        # -- Network graph: connect key entities based on transactions --
+        if not scenario.get("network_graph"):
+            graph: Dict[str, Any] = {}
+            for txn in transactions:
+                sender = txn.get("customer_id", txn.get("from", ""))
+                receiver = txn.get("counterparty", txn.get("to", ""))
+                if not sender or not receiver:
+                    continue
+                if sender not in graph:
+                    graph[sender] = {"connections": []}
+                if receiver not in graph:
+                    graph[receiver] = {"connections": []}
+                # Add bidirectional connections (avoid duplicates)
+                existing_targets = {c["entity"] for c in graph[sender]["connections"]}
+                if receiver not in existing_targets:
+                    strength = "strong" if (sender in key_entities or receiver in key_entities) else "weak"
+                    graph[sender]["connections"].append({
+                        "entity": receiver,
+                        "relationship": txn.get("type", "transfer"),
+                        "strength": strength,
+                    })
+                    graph[receiver]["connections"].append({
+                        "entity": sender,
+                        "relationship": txn.get("type", "transfer"),
+                        "strength": strength,
+                    })
+            scenario["network_graph"] = graph
+
+        # -- Source of funds: flag suspicious transactions --
+        if not scenario.get("source_of_funds"):
+            sof: Dict[str, Any] = {}
+            for txn in transactions:
+                tid = txn.get("transaction_id", "")
+                sender = txn.get("customer_id", txn.get("from", ""))
+                amount = txn.get("amount", 0)
+                if sender in key_entities and amount > 5000:
+                    sof[tid] = {
+                        "source": profiles.get(sender, {}).get("name", sender),
+                        "documentation": "Unverified" if sender in key_entities else "Verified",
+                        "risk_flags": ["No independent verification"] if sender in key_entities else [],
+                    }
+            scenario["source_of_funds"] = sof
+
+        # -- Beneficial ownership: create chain for key entities --
+        if not scenario.get("beneficial_ownership"):
+            bo: Dict[str, Any] = {}
+            key_list = list(key_entities)
+            for i, eid in enumerate(key_list):
+                prof = profiles.get(eid, {})
+                chain = [{
+                    "entity_id": eid,
+                    "entity_name": prof.get("name", eid),
+                    "hop_count": 0,
+                    "ownership_pct": 100.0,
+                    "is_ubo": (i == 0),  # First key entity is the UBO
+                }]
+                # Add indirect links
+                for j, other_eid in enumerate(key_list):
+                    if other_eid != eid:
+                        other_prof = profiles.get(other_eid, {})
+                        chain.append({
+                            "entity_id": other_eid,
+                            "entity_name": other_prof.get("name", other_eid),
+                            "hop_count": j + 1,
+                            "ownership_pct": round(100.0 / (j + 2), 1),
+                            "is_ubo": False,
+                        })
+                bo[eid] = chain
+            scenario["beneficial_ownership"] = bo
+
+        return scenario
 
     def _generate_via_llm(
         self, typology: str, difficulty: str,

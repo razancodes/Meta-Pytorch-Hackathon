@@ -80,16 +80,16 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │                     TRAINING INFRASTRUCTURE                          │
 │                                                                      │
 │  ┌────────────────────┐    ┌──────────────────────────────────┐     │
-│  │  train_ppo.py      │    │  train_grpo.py                   │     │
+│  │  train_ppo.py      │    │  train_grpo.py (EXPERIMENTAL)    │     │
 │  │  L4 (24GB VRAM)    │    │  L4 (24GB VRAM)                  │     │
 │  │  8B + 4-bit + LoRA │    │  8B + 4-bit + LoRA               │     │
-│  │  disable_adapter() │    │  Group-relative advantage (G=4)  │     │
-│  │  --use-plr         │    │  --use-plr                       │     │
-│  │  Peak: ~10 GB      │    │  Peak: ~8.5 GB (no critic)       │     │
+│  │  disable_adapter() │    │  No clipping, |KL|, grad coupling│     │
+│  │  --use-plr         │    │  --experimental required          │     │
+│  │  Peak: ~10 GB      │    │  For ablation comparison only     │     │
 │  └────────────────────┘    └──────────────────────────────────┘     │
 │                                                                      │
 │  PLR Curriculum: regret-weighted scenario replay (curriculum/)      │
-│  Step-Level PPO/GRPO: every tool call gets a reward signal          │
+│  Step-Level PPO: every tool call gets a reward signal             │
 │  KL via LoRA toggle: no second model copy needed                    │
 │  Auto-Revert: entropy heartbeat + checkpoint time machine           │
 └──────────────────────────────────────────────────────────────────────┘
@@ -145,8 +145,8 @@ python train_ppo.py --dry-run
 # PPO with PLR curriculum (~2.5 hours on L4)
 python train_ppo.py --iterations 50 --episodes 4 --use-plr
 
-# GRPO with PLR curriculum
-python train_grpo.py --iterations 150 --group-size 4 --use-plr
+# GRPO — EXPERIMENTAL (ablation comparison only, requires --experimental)
+python train_grpo.py --experimental --iterations 150 --group-size 4 --use-plr
 
 # LoRA rank ablation
 python train_ppo.py --lora-r 32 --use-plr --iterations 50

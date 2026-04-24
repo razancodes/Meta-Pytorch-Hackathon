@@ -1,26 +1,17 @@
 #!/usr/bin/env python3
 """
-Memex OS-Agent Benchmark — PPO Training (T4-Optimized).
+Memex OS-Agent Benchmark — Defender PPO Training (Mixed-Scenario).
 
-Custom step-level PPO with clipped surrogate objective and KL penalty
-against the frozen base model. Designed for NVIDIA T4 (15 GB VRAM).
-
-Architecture:
-  ┌─────────────────────────────────────────────────────────┐
-  │  Unsloth 4-bit LLM + LoRA adapters  (~5 GB)            │
-  │  ┌─────────────────────┐  ┌────────────────────────┐   │
-  │  │ Trajectory Rollout  │→ │ PPO Clipped Surrogate  │   │
-  │  │ (inference, no grad)│  │ + KL vs frozen base    │   │
-  │  └─────────────────────┘  └────────────────────────┘   │
-  │              ↑                       ↓                  │
-  │       AMLEnvironment            LoRA weight update      │
-  │    (procedural scenarios)    (AdamW, grad accum)        │
-  └─────────────────────────────────────────────────────────┘
+Fork of train_ppo.py with these additions:
+  - --scenario-source flag: 'procedural' (Phase 1) or 'mixed' (Phase 3)
+  - --launderer-checkpoint: path to frozen Launderer for scenario generation
+  - --mix-ratio: fraction of episodes using Launderer scenarios (0.0 to 1.0)
+  - GAE (Generalized Advantage Estimation) replaces simple MC returns
+  - Entity-F1 and typology-accuracy logged as separate WandB metrics
 
 Usage:
-  python train_ppo.py --dry-run              # quick 2-iter test
-  python train_ppo.py --iterations 50        # real training
-  python train_ppo.py --eval checkpoints/best
+  python train_defender_ppo.py --dry-run --scenario-source procedural
+  python train_defender_ppo.py --scenario-source mixed --launderer-checkpoint checkpoints/launderer/best --mix-ratio 0.5
 """
 
 from __future__ import annotations
@@ -39,7 +30,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -52,19 +43,19 @@ from server.aml_environment import AMLEnvironment
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Configuration
+# Configuration (extends base PPOConfig with self-play fields)
 # ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
-class PPOConfig:
+class DefenderPPOConfig:
     # ── Model ──
     model_name: str = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
-    max_seq_length: int = 2048       # keep low for T4
+    max_seq_length: int = 2048
     load_in_4bit: bool = True
 
     # ── LoRA ──
     lora_r: int = 16
-    lora_alpha: int = -1  # Auto-computed as lora_r * 2 in __post_init__
+    lora_alpha: int = -1
     lora_dropout: float = 0.05
     lora_targets: list = field(default_factory=lambda: [
         "q_proj", "k_proj", "v_proj", "o_proj",
@@ -73,18 +64,19 @@ class PPOConfig:
 
     # ── PPO ──
     lr: float = 5e-6
-    ppo_epochs: int = 4              # epochs per PPO update
-    clip_eps: float = 0.2            # clipping epsilon
-    kl_coef: float = 0.05            # KL penalty coefficient
-    entropy_coef: float = 0.05       # entropy bonus (prevents mode collapse)
-    gamma: float = 0.99              # discount factor
-    reward_clip: float = 2.0         # clip returns to [-clip, +clip]
+    ppo_epochs: int = 4
+    clip_eps: float = 0.2
+    kl_coef: float = 0.05
+    entropy_coef: float = 0.05
+    gamma: float = 0.99
+    gae_lambda: float = 0.95  # GAE λ parameter
+    reward_clip: float = 2.0
     max_grad_norm: float = 1.0
-    grad_accum_steps: int = 4        # gradient accumulation
+    grad_accum_steps: int = 4
 
     # ── Generation ──
-    max_new_tokens: int = 192        # JSON tool calls are short
-    temperature: float = 0.5         # moderate for RL exploration
+    max_new_tokens: int = 192
+    temperature: float = 0.5
     top_p: float = 0.9
     repetition_penalty: float = 1.1
 
@@ -97,10 +89,15 @@ class PPOConfig:
         "structuring", "layering", "trade_based_ml",
     ])
 
+    # ── Self-Play / Mixed Scenarios ──
+    scenario_source: str = "procedural"  # "procedural" or "mixed"
+    launderer_checkpoint: str = ""
+    mix_ratio: float = 0.5  # fraction of Launderer scenarios in "mixed" mode
+
     # ── Logging / Checkpointing ──
-    wandb_project: str = "memex-ppo"
+    wandb_project: str = "memex-defender"
     save_every: int = 10
-    output_dir: str = os.path.join(PROJECT_ROOT, "checkpoints")
+    output_dir: str = os.path.join(PROJECT_ROOT, "checkpoints", "defender")
     dry_run: bool = False
 
     # ── PLR Curriculum ──
@@ -108,13 +105,12 @@ class PPOConfig:
     plr_buffer_size: int = 200
 
     def __post_init__(self):
-        """Auto-compute lora_alpha = lora_r * 2 if not explicitly set."""
         if self.lora_alpha == -1:
             self.lora_alpha = self.lora_r * 2
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# System Prompt (condensed for token efficiency)
+# System Prompt (same as train_ppo.py)
 # ═══════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """You are a Senior AML Compliance Investigator in a Memex OS-Agent Environment.
@@ -152,7 +148,7 @@ typologies incur heavy penalties."""
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Prompt Formatting & JSON Parsing
+# Prompt Formatting & JSON Parsing (same as train_ppo.py)
 # ═══════════════════════════════════════════════════════════════════════
 
 def format_prompt(
@@ -190,12 +186,8 @@ def format_prompt(
 
 
 def parse_action(text: str) -> Tuple[str, Dict[str, Any]]:
-    """Robust JSON tool-call parser with multi-tier fallback.
-
-    Always returns (tool_name: str, params: dict). Never crashes.
-    """
+    """Robust JSON tool-call parser with multi-tier fallback."""
     text = re.sub(r"```(?:json)?\s*", "", text.strip()).strip("` \n")
-    # Tier 1: full parse
     try:
         d = json.loads(text)
         if isinstance(d, dict):
@@ -206,7 +198,6 @@ def parse_action(text: str) -> Tuple[str, Dict[str, Any]]:
             return tool, params
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
-    # Tier 2: regex extract
     m = re.search(r'\{[^{}]*"tool"\s*:\s*"([^"]+)"[^{}]*\}', text, re.DOTALL)
     if m:
         try:
@@ -219,24 +210,23 @@ def parse_action(text: str) -> Tuple[str, Dict[str, Any]]:
                 return tool, params
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-    # Tier 3: tool name only
     tm = re.search(r'"tool"\s*:\s*"([^"]+)"', text)
     return (tm.group(1) if tm else "review_alert"), {}
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Trajectory Data Structures
+# Trajectory Data
 # ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
 class StepData:
     """Single step in an episode trajectory."""
-    query_ids: torch.Tensor        # tokenized prompt
-    response_ids: torch.Tensor     # tokenized response only
-    response_start: int            # index where response begins in full seq
+    query_ids: torch.Tensor
+    response_ids: torch.Tensor
+    response_start: int
     reward: float
-    old_log_prob: float            # log π_old(response | query)
-    ref_log_prob: float            # log π_ref(response | query)  [frozen base]
+    old_log_prob: float
+    ref_log_prob: float
     advantage: float = 0.0
     response_text: str = ""
 
@@ -248,68 +238,67 @@ class EpisodeStats:
     steps: int
     difficulty: str
     typology: str
+    scenario_source: str = "procedural"
     page_faults: int = 0
     async_timeouts: int = 0
     successful_pages: int = 0
     meta_injections: int = 0
+    kernel_mode_uses: int = 0
+    # Metrics for self-play tracking
+    decision_correct: bool = False
+    typology_correct: bool = False
+    entity_f1: float = 0.0
+    detection: str = ""  # TP, TN, FP, or FN
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Core PPO Trainer
+# Core PPO Trainer (extended with GAE)
 # ═══════════════════════════════════════════════════════════════════════
 
-class MemexPPO:
-    """Custom step-level PPO trainer for multi-step LLM environments.
+class DefenderPPO:
+    """Step-level PPO trainer for the Defender agent.
 
-    Key design choices for T4 (15 GB VRAM):
-      - Process steps ONE AT A TIME during PPO update (no batching)
-      - KL reference via model.disable_adapter() — no second model copy
-      - Precompute ref_log_prob during collection to save a fwd pass
-      - Gradient accumulation to simulate larger effective batch
+    Extensions over train_ppo.py::MemexPPO:
+      - GAE (Generalized Advantage Estimation) with configurable λ
+      - Mixed scenario source support (procedural + launderer)
+      - Entity F1 and typology tracking per episode
     """
 
-    def __init__(self, model, tokenizer, config: PPOConfig, device: str = "cuda"):
+    def __init__(self, model, tokenizer, config: DefenderPPOConfig, device: str = "cuda"):
         self.model = model
         self.tokenizer = tokenizer
         self.cfg = config
         self.device = device
 
-        # Optimizer over LoRA parameters only
         trainable = [p for p in model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(trainable, lr=config.lr)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=config.total_iterations, eta_min=config.lr * 0.1,
         )
 
-
     # ── Log Probability ──────────────────────────────────────────────
 
     def _compute_log_prob(
         self, query_ids: torch.Tensor, response_ids: torch.Tensor, with_grad: bool = False,
     ) -> torch.Tensor:
-        """Compute mean per-token log probability for response tokens."""
         full_ids = torch.cat([query_ids, response_ids]).unsqueeze(0).to(self.device)
         resp_start = len(query_ids)
-
         ctx = torch.enable_grad() if with_grad else torch.no_grad()
         with ctx:
             logits = self.model(input_ids=full_ids).logits[0]
-            # logits[t] predicts token t+1; take response positions
             resp_logits = logits[resp_start - 1 : -1, :]
             log_probs = F.log_softmax(resp_logits, dim=-1)
             token_lp = log_probs.gather(1, response_ids.to(self.device).unsqueeze(1)).squeeze(1)
-            return token_lp.mean()  # mean, NOT sum — keeps KL scale-invariant across response lengths
+            return token_lp.mean()
 
     def _compute_ref_log_prob(
         self, query_ids: torch.Tensor, response_ids: torch.Tensor,
     ) -> float:
-        """Compute reference log prob using the frozen base (LoRA disabled)."""
         self.model.eval()
         try:
             with self.model.disable_adapter():
                 lp = self._compute_log_prob(query_ids, response_ids, with_grad=False)
         except AttributeError:
-            # Fallback if disable_adapter unavailable
             lp = self._compute_log_prob(query_ids, response_ids, with_grad=False)
         self.model.train()
         return lp.item()
@@ -317,19 +306,17 @@ class MemexPPO:
     # ── Generation ───────────────────────────────────────────────────
 
     def generate(self, prompt: str) -> Tuple[str, torch.Tensor, torch.Tensor]:
-        """Generate a response and return (text, query_ids, response_ids)."""
         inputs = self.tokenizer(
             prompt, return_tensors="pt", truncation=True,
             max_length=self.cfg.max_seq_length - self.cfg.max_new_tokens,
         ).to(self.device)
-
         query_ids = inputs["input_ids"].squeeze(0)
 
         with torch.no_grad():
             out = self.model.generate(
                 **inputs,
                 max_new_tokens=self.cfg.max_new_tokens,
-                max_length=None,  # suppress max_length vs max_new_tokens warning
+                max_length=None,
                 temperature=self.cfg.temperature,
                 top_p=self.cfg.top_p,
                 do_sample=True,
@@ -337,11 +324,8 @@ class MemexPPO:
                 pad_token_id=self.tokenizer.eos_token_id,
             )
         response_ids = out[0][len(query_ids):]
-
-        # Guard: if model emits 0 new tokens, return a dummy to avoid NaN
         if len(response_ids) == 0:
             response_ids = torch.tensor([self.tokenizer.eos_token_id])
-
         text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return text, query_ids.cpu(), response_ids.cpu()
 
@@ -349,8 +333,9 @@ class MemexPPO:
 
     def rollout(
         self, env: AMLEnvironment, difficulty: str, typology: str,
+        scenario_source: str = "procedural",
     ) -> Tuple[List[StepData], EpisodeStats]:
-        """Collect one full episode trajectory (no gradients)."""
+        """Collect one full episode trajectory."""
         from unsloth import FastLanguageModel
         FastLanguageModel.for_inference(self.model)
 
@@ -365,7 +350,7 @@ class MemexPPO:
             prompt = format_prompt(obs, step_num, kernel, disk, ram)
             resp_text, q_ids, r_ids = self.generate(prompt)
 
-            # Degenerate response detection: >80% repeated tokens = gibberish
+            # Degenerate response detection
             if len(r_ids) > 4:
                 unique_ratio = len(set(r_ids.tolist())) / len(r_ids)
                 if unique_ratio < 0.20:
@@ -373,31 +358,27 @@ class MemexPPO:
                     steps.append(StepData(
                         query_ids=q_ids, response_ids=r_ids,
                         response_start=len(q_ids),
-                        reward=reward, old_log_prob=self._compute_log_prob(q_ids, r_ids, with_grad=False).item(),
+                        reward=reward,
+                        old_log_prob=self._compute_log_prob(q_ids, r_ids, with_grad=False).item(),
                         ref_log_prob=self._compute_ref_log_prob(q_ids, r_ids),
                         response_text=resp_text,
                     ))
-                    break  # End episode — degenerate model output
+                    break
 
-            # Compute old & ref log probs during collection (saves fwd pass later)
             old_lp = self._compute_log_prob(q_ids, r_ids, with_grad=False).item()
             ref_lp = self._compute_ref_log_prob(q_ids, r_ids)
 
-            # Parse and step environment (fault-tolerant)
             tool, params = parse_action(resp_text)
             try:
                 obs = env.step(AMLAction(tool=tool, parameters=params))
                 reward = obs.reward if obs.reward is not None else 0.0
             except Exception as e:
-                # Malformed action crashed the environment handler
-                # Assign penalty so agent learns to produce valid JSON
                 reward = -0.10
                 obs = AMLObservation(
                     tool_result={"error": f"Invalid action: {str(e)[:100]}"},
                     available_tools=[],
                     message=f"Action failed: {str(e)[:100]}. Produce valid JSON.",
-                    done=True,
-                    reward=reward,
+                    done=True, reward=reward,
                     metadata={"step": step_num, "error": "malformed_action"},
                 )
 
@@ -411,46 +392,93 @@ class MemexPPO:
             if obs.done:
                 break
 
-        # Compute discounted returns and advantages
-        self._compute_advantages(steps)
+        # Compute GAE advantages
+        self._compute_gae(steps)
 
+        # Extract episode metrics
         st = env._state
+        gt = env._current_scenario.ground_truth if env._current_scenario else {}
+
+        # Decision correctness
+        decision_correct = False
+        typology_correct = False
+        entity_f1 = 0.0
+        if st.decision_made and gt:
+            # Check decision
+            if st.findings:  # file_sar was called
+                decision_correct = (gt.get("correct_decision") == "file_sar")
+            else:  # close_alert
+                decision_correct = (gt.get("correct_decision") == "close_alert")
+
+            # Typology
+            gt_typo = gt.get("typology", "")
+            agent_typo = ""
+            for f in st.findings:
+                if f.lower() in ["structuring", "layering", "trade_based_ml"]:
+                    agent_typo = f.lower()
+                    break
+            typology_correct = (agent_typo == gt_typo)
+
+            # Entity F1
+            gt_entities: Set[str] = set(gt.get("key_entities", []))
+            # Approximate: entities from findings are hard to track perfectly
+            # so use the state's watchlist_checked as proxy
+            flagged: Set[str] = set(st.watchlist_checked) if st.watchlist_checked else set()
+            if gt_entities and flagged:
+                tp = len(flagged & gt_entities)
+                prec = tp / max(len(flagged), 1)
+                rec = tp / max(len(gt_entities), 1)
+                entity_f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+
         stats = EpisodeStats(
             score=st.accumulated_reward, steps=len(steps),
             difficulty=difficulty, typology=typology,
+            scenario_source=scenario_source,
             page_faults=st.page_fault_count, async_timeouts=st.async_timeout_count,
             successful_pages=st.successful_pages, meta_injections=st.meta_injections,
+            kernel_mode_uses=st.kernel_inject_reward_count,
+            decision_correct=decision_correct,
+            typology_correct=typology_correct,
+            entity_f1=entity_f1,
         )
         return steps, stats
 
-    def _compute_advantages(self, steps: List[StepData]) -> None:
-        """Compute discounted returns and normalized advantages."""
+    def _compute_gae(self, steps: List[StepData]) -> None:
+        """Compute GAE (Generalized Advantage Estimation) advantages.
+
+        Uses γ (gamma) for discount and λ (gae_lambda) for bias-variance tradeoff.
+        When λ=1.0, GAE reduces to Monte Carlo returns.
+        When λ=0.0, GAE reduces to one-step TD.
+        Default λ=0.95 balances both.
+        """
         T = len(steps)
-        returns = [0.0] * T
-        G = 0.0
-        for t in reversed(range(T)):
-            G = steps[t].reward + self.cfg.gamma * G
-            returns[t] = G
-
-        # Clip returns to prevent outlier gradient signals
+        gamma = self.cfg.gamma
+        lam = self.cfg.gae_lambda
         clip = self.cfg.reward_clip
-        returns = [max(-clip, min(clip, r)) for r in returns]
 
-        # Per-episode normalization: no cross-difficulty contamination
-        mean_return = sum(returns) / T
-        advs = [r - mean_return for r in returns]
-        std = max((sum(a**2 for a in advs) / T) ** 0.5, 1e-8)
+        # Compute TD residuals: δ_t = r_t + γ*V(s_{t+1}) - V(s_t)
+        # Since we don't have a value function, approximate V(s) ≈ 0
+        # This gives δ_t = r_t (clipped)
+        rewards = [max(-clip, min(clip, s.reward)) for s in steps]
+
+        # GAE: A_t = Σ_{l=0}^{T-t-1} (γλ)^l * δ_{t+l}
+        advantages = [0.0] * T
+        gae = 0.0
+        for t in reversed(range(T)):
+            delta = rewards[t]  # δ_t = r_t (no value baseline)
+            gae = delta + gamma * lam * gae
+            advantages[t] = gae
+
+        # Normalize per episode
+        mean_adv = sum(advantages) / max(T, 1)
+        std_adv = max((sum((a - mean_adv) ** 2 for a in advantages) / max(T, 1)) ** 0.5, 1e-8)
         for t in range(T):
-            steps[t].advantage = advs[t] / std
+            steps[t].advantage = (advantages[t] - mean_adv) / std_adv
 
     # ── PPO Update ───────────────────────────────────────────────────
 
     def ppo_update(self, all_steps: List[StepData]) -> Dict[str, float]:
-        """Run PPO epochs on collected trajectory steps.
-
-        Processes steps ONE AT A TIME for minimal VRAM usage.
-        Uses gradient accumulation to simulate larger batch.
-        """
+        """Run PPO epochs. Same as MemexPPO but uses DefenderPPOConfig."""
         from unsloth import FastLanguageModel
         FastLanguageModel.for_training(self.model)
 
@@ -467,7 +495,6 @@ class MemexPPO:
 
             for i, step in enumerate(all_steps):
                 try:
-                    # Current policy log prob (WITH gradients)
                     full_ids = torch.cat([step.query_ids, step.response_ids]).unsqueeze(0).to(self.device)
                     resp_start = len(step.query_ids)
 
@@ -479,19 +506,15 @@ class MemexPPO:
                     ).squeeze(1)
                     new_lp = token_lp.mean()
 
-                    # Entropy bonus (prevents mode collapse)
                     entropy = -(log_probs.exp() * log_probs).sum(-1).mean()
 
-                    # PPO clipped surrogate
-                    log_ratio = new_lp - step.old_log_prob
-                    log_ratio = torch.clamp(log_ratio, -10.0, 10.0)  # prevent exp overflow
+                    log_ratio = torch.clamp(new_lp - step.old_log_prob, -10.0, 10.0)
                     ratio = torch.exp(log_ratio)
                     adv = torch.tensor(step.advantage, device=self.device)
                     surr1 = ratio * adv
                     surr2 = torch.clamp(ratio, 1.0 - self.cfg.clip_eps, 1.0 + self.cfg.clip_eps) * adv
                     policy_loss = -torch.min(surr1, surr2)
 
-                    # KL penalty against frozen base (abs prevents negative KL rewarding divergence)
                     kl = new_lp - step.ref_log_prob
                     kl_loss = self.cfg.kl_coef * kl.abs()
 
@@ -505,7 +528,6 @@ class MemexPPO:
                     epoch_kl += kl.item()
                     epoch_steps += 1
 
-                    # Gradient accumulation step
                     if (i + 1) % self.cfg.grad_accum_steps == 0:
                         torch.nn.utils.clip_grad_norm_(
                             [p for p in self.model.parameters() if p.requires_grad],
@@ -522,13 +544,11 @@ class MemexPPO:
                     else:
                         raise
 
-            # KL early stopping: if mean KL too large, remaining epochs are wasted
             if epoch_steps > 0:
                 mean_epoch_kl = abs(epoch_kl / epoch_steps)
                 if mean_epoch_kl > 15.0:
-                    break  # policy drifted too far, stop PPO epochs
+                    break
 
-            # Flush remaining gradients
             if len(all_steps) % self.cfg.grad_accum_steps != 0:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
@@ -537,11 +557,11 @@ class MemexPPO:
 
         n = max(n_updates, 1)
         return {
-            "ppo/loss/policy": total_policy_loss / n,
-            "ppo/kl": total_kl / n,
-            "ppo/entropy": total_entropy / n,
-            "ppo/steps_trained": n_updates,
-            "ppo/lr": self.scheduler.get_last_lr()[0],
+            "defender_ppo/loss/policy": total_policy_loss / n,
+            "defender_ppo/kl": total_kl / n,
+            "defender_ppo/entropy": total_entropy / n,
+            "defender_ppo/steps_trained": n_updates,
+            "defender_ppo/lr": self.scheduler.get_last_lr()[0],
         }
 
     # ── Checkpoint ───────────────────────────────────────────────────
@@ -550,57 +570,11 @@ class MemexPPO:
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)
         self.tokenizer.save_pretrained(path)
-        print(f"  💾 Saved: {path}")
-
-    # ── Stable Checkpoint (Auto-Revert) ─────────────────────────────────
-
-    def save_stable_state(self, path: str) -> None:
-        """Save LoRA weights + optimizer state as 'last known good'."""
-        os.makedirs(path, exist_ok=True)
-        lora_state = {
-            k: v.cpu().clone()
-            for k, v in self.model.named_parameters() if v.requires_grad
-        }
-        torch.save(lora_state, os.path.join(path, "lora_state.pt"))
-        torch.save(self.optimizer.state_dict(), os.path.join(path, "optim_state.pt"))
-        torch.save({
-            "entropy_coef": self.cfg.entropy_coef,
-            "temperature": self.cfg.temperature,
-            "lr": self.cfg.lr,
-        }, os.path.join(path, "hyperparams.pt"))
-
-    def load_stable_state(self, path: str) -> bool:
-        """Reload LoRA weights from stable checkpoint. Returns True on success."""
-        lora_path = os.path.join(path, "lora_state.pt")
-        if not os.path.exists(lora_path):
-            return False
-        state = torch.load(lora_path, map_location=self.device, weights_only=True)
-        for name, param in self.model.named_parameters():
-            if name in state:
-                param.data.copy_(state[name].to(self.device))
-        # Restore reward EMA to prevent baseline corruption
-        hp_path = os.path.join(path, "hyperparams.pt")
-        return True
-
-    def rebuild_optimizer(self, remaining_iters: int = 0) -> None:
-        """Recreate optimizer + scheduler with current config (after revert).
-
-        Args:
-            remaining_iters: Number of iterations left in training.
-                If 0, uses full total_iterations (safe default, slightly
-                wrong cosine shape but won't crash).
-        """
-        t_max = remaining_iters if remaining_iters > 0 else self.cfg.total_iterations
-        trainable = [p for p in self.model.parameters() if p.requires_grad]
-        self.optimizer = torch.optim.AdamW(trainable, lr=self.cfg.lr)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=t_max,
-            eta_min=self.cfg.lr * 0.1,
-        )
+        print(f"  💾 Saved Defender: {path}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# VRAM Monitoring
+# Training Loop
 # ═══════════════════════════════════════════════════════════════════════
 
 def vram_status() -> str:
@@ -611,24 +585,23 @@ def vram_status() -> str:
     return f"{alloc:.1f}/{total:.1f} GB"
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Training Loop
-# ═══════════════════════════════════════════════════════════════════════
-
-def train(cfg: PPOConfig) -> None:
+def train(cfg: DefenderPPOConfig) -> None:
     banner = f"""
 {'═'*60}
-  MEMEX PPO TRAINER  —  T4-Optimized
-  Model:  {cfg.model_name}
-  LoRA:   r={cfg.lora_r}  α={cfg.lora_alpha}
-  LR:     {cfg.lr}  |  Clip: {cfg.clip_eps}  |  KL: {cfg.kl_coef}
-  Iters:  {cfg.total_iterations}  ×  {cfg.episodes_per_iter} ep/iter
-  Dry:    {cfg.dry_run}
+  MEMEX DEFENDER PPO TRAINER  —  Self-Play Ready
+  Model:     {cfg.model_name}
+  LoRA:      r={cfg.lora_r}  α={cfg.lora_alpha}
+  LR:        {cfg.lr}  |  Clip: {cfg.clip_eps}  |  KL: {cfg.kl_coef}
+  GAE:       γ={cfg.gamma}  λ={cfg.gae_lambda}
+  Scenarios: {cfg.scenario_source} (mix_ratio={cfg.mix_ratio})
+  Launderer: {cfg.launderer_checkpoint or 'NONE'}
+  Iters:     {cfg.total_iterations}  ×  {cfg.episodes_per_iter} ep/iter
+  Dry:       {cfg.dry_run}
 {'═'*60}"""
     print(banner)
 
     # ── 1. Load Model ──
-    print("[1/4] Loading model with Unsloth...")
+    print("[1/4] Loading Defender model with Unsloth...")
     from unsloth import FastLanguageModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -651,51 +624,47 @@ def train(cfg: PPOConfig) -> None:
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_p = sum(p.numel() for p in model.parameters())
     print(f"  ✓ LoRA: {trainable:,} / {total_p:,} ({100*trainable/total_p:.2f}%)")
-    print(f"  VRAM: {vram_status()}")
 
     # ── 3. WandB ──
     if not cfg.dry_run:
         print("[3/4] Initializing WandB...")
         import wandb
-        wandb.init(project=cfg.wandb_project, name=f"memex-{int(time.time())}",
+        wandb.init(project=cfg.wandb_project, name=f"defender-{int(time.time())}",
                    config=vars(cfg))
-        print("  ✓ WandB ready")
     else:
         print("[3/4] WandB SKIPPED (dry-run)")
 
     # ── 4. Train ──
     print("[4/4] Starting training loop...\n")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    ppo = MemexPPO(model, tokenizer, cfg, device)
+    ppo = DefenderPPO(model, tokenizer, cfg, device)
     env = AMLEnvironment()
 
-    # ── PLR Curriculum Engine ──
+    # PLR Curriculum
     plr = None
     if cfg.use_plr:
         from curriculum.plr_engine import PLREngine
         plr = PLREngine(buffer_size=cfg.plr_buffer_size)
-        print(f"  ✓ PLR Curriculum enabled (buffer={cfg.plr_buffer_size})")
 
     iters = 2 if cfg.dry_run else cfg.total_iterations
     eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
     best_score = -float("inf")
-
-    # ── Auto-Revert State ──
-    stable_path = os.path.join(cfg.output_dir, "_stable")
-    stable_saved = False
-    low_entropy_streak = 0
-    low_score_streak = 0
-    revert_count = 0
-    max_reverts = 5  # prevent infinite revert loops
 
     for it in range(1, iters + 1):
         t0 = time.time()
         all_steps: List[StepData] = []
         ep_stats: List[EpisodeStats] = []
 
-        # ── Collect trajectories ──
         for ep in range(eps_per):
-            # PLR curriculum: adaptive scenario selection
+            # Decide scenario source
+            use_launderer = (
+                cfg.scenario_source == "mixed"
+                and random.random() < cfg.mix_ratio
+                and cfg.launderer_checkpoint
+            )
+            src = "launderer" if use_launderer else "procedural"
+
+            # Select difficulty/typology
             if plr is not None:
                 diff, typo = plr.sample_scenario(cfg.difficulties, cfg.typologies)
             else:
@@ -703,189 +672,108 @@ def train(cfg: PPOConfig) -> None:
                 typo = random.choice(cfg.typologies)
 
             try:
-                steps, stats = ppo.rollout(env, diff, typo)
+                # NOTE: For launderer-generated scenarios, the self_play.py
+                # orchestrator pre-loads scenarios into the env. In standalone
+                # mode, this just uses procedural scenarios.
+                steps, stats = ppo.rollout(env, diff, typo, scenario_source=src)
                 all_steps.extend(steps)
                 ep_stats.append(stats)
 
-                # PLR update: feed regret back into the buffer
                 if plr is not None:
-                    scenario_id = f"iter{it}_ep{ep}_{diff}_{typo}"
-                    plr.update(scenario_id, diff, typo, stats.score)
+                    plr.update(f"iter{it}_ep{ep}_{diff}_{typo}", diff, typo, stats.score)
 
-                plr_tag = " [PLR]" if plr is not None else ""
                 print(
-                    f"  It {it:>3} Ep {ep+1} | {diff}/{typo}{plr_tag} | "
+                    f"  It {it:>3} Ep {ep+1} | {diff}/{typo} [{src}] | "
                     f"steps={stats.steps:>2} score={stats.score:+.3f} | "
-                    f"PF={stats.page_faults} AT={stats.async_timeouts} "
-                    f"SP={stats.successful_pages} MI={stats.meta_injections}"
+                    f"dec={'✓' if stats.decision_correct else '✗'} "
+                    f"typo={'✓' if stats.typology_correct else '✗'} "
+                    f"F1={stats.entity_f1:.2f} | "
+                    f"PF={stats.page_faults} MI={stats.meta_injections}"
                 )
-                # Show a sample response from the first step
-                if ep == 0 and steps:
-                    print(f"    [sample] {steps[0].response_text[:120]}...")
 
             except Exception as e:
                 print(f"  ⚠ Episode failed: {e}")
                 continue
 
         if not all_steps:
-            print(f"  ⚠ No steps collected, skipping iteration {it}")
             continue
 
-        # ── PPO Update ──
+        # PPO Update
         ppo_stats = ppo.ppo_update(all_steps)
 
-        # ── Stats ──
+        # Aggregate stats
         mean_score = sum(s.score for s in ep_stats) / len(ep_stats)
-        total_pf = sum(s.page_faults for s in ep_stats)
-        total_at = sum(s.async_timeouts for s in ep_stats)
-        total_sp = sum(s.successful_pages for s in ep_stats)
-        total_mi = sum(s.meta_injections for s in ep_stats)
+        dec_acc = sum(1 for s in ep_stats if s.decision_correct) / len(ep_stats)
+        typo_acc = sum(1 for s in ep_stats if s.typology_correct) / len(ep_stats)
+        mean_f1 = sum(s.entity_f1 for s in ep_stats) / len(ep_stats)
         elapsed = time.time() - t0
-        entropy = ppo_stats["ppo/entropy"]
-        kl = ppo_stats["ppo/kl"]
 
         print(
             f"\n  ═══ Iter {it}/{iters} ═══\n"
-            f"    Mean score:  {mean_score:+.4f}\n"
-            f"    PPO loss:    {ppo_stats['ppo/loss/policy']:.6f}\n"
-            f"    KL:          {kl:.6f}\n"
-            f"    Entropy:     {entropy:.4f}\n"
-            f"    OS: PF={total_pf} AT={total_at} SP={total_sp} MI={total_mi}\n"
+            f"    Mean score:    {mean_score:+.4f}\n"
+            f"    Decision acc:  {dec_acc:.2%}\n"
+            f"    Typology acc:  {typo_acc:.2%}\n"
+            f"    Entity F1:     {mean_f1:.4f}\n"
+            f"    PPO loss:      {ppo_stats['defender_ppo/loss/policy']:.6f}\n"
+            f"    KL:            {ppo_stats['defender_ppo/kl']:.6f}\n"
+            f"    Entropy:       {ppo_stats['defender_ppo/entropy']:.4f}\n"
             f"    VRAM: {vram_status()}  |  {elapsed:.0f}s\n"
         )
 
-        # ── Entropy Heartbeat Monitor (Auto-Revert) ──────────────────
-        # Track streaks
-        if entropy < 0.01:
-            low_entropy_streak += 1
-        else:
-            low_entropy_streak = 0
-
-        if mean_score <= 0.0:
-            low_score_streak += 1
-        else:
-            low_score_streak = 0
-
-        # Save stable checkpoint when training is healthy
-        if entropy > 0.05 and mean_score > 0.3:
-            ppo.save_stable_state(stable_path)
-            stable_saved = True
-
-        # Check for collapse
-        is_collapse = (
-            low_entropy_streak >= 2
-            or low_score_streak >= 2
-            or abs(kl) > 10.0
-        )
-
-        if is_collapse and stable_saved and revert_count < max_reverts:
-            revert_count += 1
-            print(
-                f"\n  ⚠️  COLLAPSE DETECTED (revert #{revert_count})  ⚠️\n"
-                f"    Trigger: entropy={entropy:.4f} | KL={kl:.4f} | "
-                f"score={mean_score:+.4f}\n"
-                f"    Purging VRAM and reloading stable checkpoint..."
-            )
-
-            # 1. Purge corrupted gradient state
-            torch.cuda.empty_cache()
-            gc.collect()
-
-            # 2. Reload last known good weights
-            success = ppo.load_stable_state(stable_path)
-            if not success:
-                print("    ❌ Failed to load stable state, continuing...")
-            else:
-                # 3. Bump hyperparams to force re-exploration
-                old_ec = cfg.entropy_coef
-                old_temp = cfg.temperature
-                old_lr = cfg.lr
-                cfg.entropy_coef = min(cfg.entropy_coef * 1.5, 0.20)
-                cfg.temperature = min(cfg.temperature + 0.1, 0.9)
-                cfg.lr = cfg.lr * 0.7
-                ppo.cfg = cfg
-
-                # 4. Free old optimizer state (momentum/variance tensors) BEFORE allocating new
-                del ppo.optimizer, ppo.scheduler
-                gc.collect()
-                torch.cuda.empty_cache()
-
-                # 5. Rebuild optimizer with new LR and correct remaining schedule
-                ppo.rebuild_optimizer(remaining_iters=iters - it)
-
-                print(
-                    f"    ✅ Reverted successfully.\n"
-                    f"    entropy_coef: {old_ec:.4f} → {cfg.entropy_coef:.4f}\n"
-                    f"    temperature:  {old_temp:.2f} → {cfg.temperature:.2f}\n"
-                    f"    lr:           {old_lr:.2e} → {cfg.lr:.2e}\n"
-                )
-
-            # Reset streaks
-            low_entropy_streak = 0
-            low_score_streak = 0
-
-            # Log revert event to WandB
-            if not cfg.dry_run:
-                import wandb
-                wandb.log({
-                    "revert/count": revert_count,
-                    "revert/entropy_coef": cfg.entropy_coef,
-                    "revert/temperature": cfg.temperature,
-                    "revert/lr": cfg.lr,
-                    "revert/trigger_entropy": entropy,
-                    "revert/trigger_kl": kl,
-                    "revert/trigger_score": mean_score,
-                })
-
-            # Skip checkpointing this iteration — weights are reverted
-            del all_steps, ep_stats
-            gc.collect()
-            torch.cuda.empty_cache()
-            continue
-
-        # ── WandB ──
+        # WandB
         if not cfg.dry_run:
             import wandb
+            # OS Metrics (mandatory)
+            mean_pf = sum(s.page_faults for s in ep_stats) / len(ep_stats)
+            mean_at = sum(s.async_timeouts for s in ep_stats) / len(ep_stats)
+            mean_sp = sum(s.successful_pages for s in ep_stats) / len(ep_stats)
+            mean_mi = sum(s.meta_injections for s in ep_stats) / len(ep_stats)
+            mean_km = sum(s.kernel_mode_uses for s in ep_stats) / len(ep_stats)
+
+            # Non-degeneracy metrics (TP/TN/FP/FN counts)
+            n_ep = len(ep_stats)
+            sar_rate = sum(1 for s in ep_stats if s.decision_correct and s.detection == "TP") / max(n_ep, 1)
+            close_rate = sum(1 for s in ep_stats if s.decision_correct and s.detection == "TN") / max(n_ep, 1)
+
             log_dict = {
                 "iteration": it,
-                "ppo/returns/mean": mean_score,
+                "defender/returns/mean": mean_score,
+                "defender/decision_accuracy": dec_acc,
+                "defender/typology_accuracy": typo_acc,
+                "defender/entity_f1": mean_f1,
+                # OS metrics (mandatory logging)
+                "defender/os/page_faults": mean_pf,
+                "defender/os/async_timeouts": mean_at,
+                "defender/os/successful_pages": mean_sp,
+                "defender/os/meta_injections": mean_mi,
+                "defender/os/kernel_mode_uses": mean_km,
+                # Non-degeneracy
+                "defender/sar_rate": sar_rate,
+                "defender/close_rate": close_rate,
                 **ppo_stats,
-                "os/page_faults": total_pf,
-                "os/async_timeouts": total_at,
-                "os/successful_pages": total_sp,
-                "os/meta_injections": total_mi,
                 "perf/iter_seconds": elapsed,
-                "perf/vram_gb": torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
-                "stability/entropy_coef": cfg.entropy_coef,
-                "stability/temperature": cfg.temperature,
-                "stability/revert_count": revert_count,
             }
-            # Merge PLR curriculum metrics
             if plr is not None:
                 log_dict.update(plr.get_wandb_metrics())
             wandb.log(log_dict)
 
-        # ── Checkpoint ──
+        # Checkpoint
         if mean_score > best_score:
             best_score = mean_score
             ppo.save(os.path.join(cfg.output_dir, "best"))
-            if plr is not None:
-                plr.save(os.path.join(cfg.output_dir, "best", "plr_buffer.json"))
         if it % cfg.save_every == 0:
             ppo.save(os.path.join(cfg.output_dir, f"iter-{it}"))
-            if plr is not None:
-                plr.save(os.path.join(cfg.output_dir, f"iter-{it}", "plr_buffer.json"))
 
-        # ── GC ──
+        # GC
         del all_steps
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # ── Final save ──
+    # Final save
     ppo.save(os.path.join(cfg.output_dir, "final"))
     print(f"\n{'═'*60}")
-    print(f"  TRAINING COMPLETE  |  Best: {best_score:+.4f}")
+    print(f"  DEFENDER TRAINING COMPLETE  |  Best: {best_score:+.4f}")
     print(f"{'═'*60}\n")
 
     if not cfg.dry_run:
@@ -894,72 +782,36 @@ def train(cfg: PPOConfig) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Evaluation
-# ═══════════════════════════════════════════════════════════════════════
-
-def evaluate(model_path: str):
-    """Evaluate a checkpoint across all 9 difficulty×typology combos."""
-    from unsloth import FastLanguageModel
-
-    print(f"\n{'═'*60}\n  EVALUATION: {model_path}\n{'═'*60}")
-
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_path, max_seq_length=2048, load_in_4bit=True,
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    FastLanguageModel.for_inference(model)
-
-    cfg = PPOConfig()
-    ppo = MemexPPO(model, tokenizer, cfg)
-    env = AMLEnvironment()
-
-    scores = []
-    for diff in ["easy", "medium", "hard"]:
-        for typo in ["structuring", "layering", "trade_based_ml"]:
-            _, stats = ppo.rollout(env, diff, typo)
-            scores.append(stats.score)
-            print(
-                f"  {diff:>6}/{typo:<15} | steps={stats.steps:>2} | "
-                f"score={stats.score:+.4f} | "
-                f"PF={stats.page_faults} SP={stats.successful_pages} MI={stats.meta_injections}"
-            )
-
-    print(f"\n  Mean: {sum(scores)/len(scores):+.4f}  "
-          f"Min: {min(scores):+.4f}  Max: {max(scores):+.4f}")
-    print(f"{'═'*60}\n")
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════
 
 def main():
-    p = argparse.ArgumentParser(description="Memex PPO Trainer")
-    p.add_argument("--model", default=PPOConfig.model_name)
-    p.add_argument("--lr", type=float, default=PPOConfig.lr)
-    p.add_argument("--lora-r", type=int, default=PPOConfig.lora_r)
-    p.add_argument("--episodes", type=int, default=PPOConfig.episodes_per_iter)
-    p.add_argument("--iterations", type=int, default=PPOConfig.total_iterations)
-    p.add_argument("--temperature", type=float, default=PPOConfig.temperature)
-    p.add_argument("--wandb-project", default=PPOConfig.wandb_project)
-    p.add_argument("--output-dir", default=PPOConfig.output_dir)
+    p = argparse.ArgumentParser(description="Memex Defender PPO Trainer (Self-Play)")
+    p.add_argument("--model", default=DefenderPPOConfig.model_name)
+    p.add_argument("--lr", type=float, default=DefenderPPOConfig.lr)
+    p.add_argument("--lora-r", type=int, default=DefenderPPOConfig.lora_r)
+    p.add_argument("--episodes", type=int, default=DefenderPPOConfig.episodes_per_iter)
+    p.add_argument("--iterations", type=int, default=DefenderPPOConfig.total_iterations)
+    p.add_argument("--temperature", type=float, default=DefenderPPOConfig.temperature)
+    p.add_argument("--scenario-source", choices=["procedural", "mixed"], default="procedural")
+    p.add_argument("--launderer-checkpoint", type=str, default="")
+    p.add_argument("--mix-ratio", type=float, default=0.5)
+    p.add_argument("--wandb-project", default=DefenderPPOConfig.wandb_project)
+    p.add_argument("--output-dir", default=DefenderPPOConfig.output_dir)
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--use-plr", action="store_true", default=False,
-                   help="Enable PLR curriculum (adaptive scenario sampling)")
-    p.add_argument("--eval", type=str, default=None, metavar="PATH")
+    p.add_argument("--use-plr", action="store_true", default=False)
     args = p.parse_args()
 
-    if args.eval:
-        evaluate(args.eval)
-    else:
-        train(PPOConfig(
-            model_name=args.model, lr=args.lr, lora_r=args.lora_r,
-            episodes_per_iter=args.episodes, total_iterations=args.iterations,
-            temperature=args.temperature,
-            wandb_project=args.wandb_project, output_dir=args.output_dir,
-            dry_run=args.dry_run, use_plr=args.use_plr,
-        ))
+    train(DefenderPPOConfig(
+        model_name=args.model, lr=args.lr, lora_r=args.lora_r,
+        episodes_per_iter=args.episodes, total_iterations=args.iterations,
+        temperature=args.temperature,
+        scenario_source=args.scenario_source,
+        launderer_checkpoint=args.launderer_checkpoint,
+        mix_ratio=args.mix_ratio,
+        wandb_project=args.wandb_project, output_dir=args.output_dir,
+        dry_run=args.dry_run, use_plr=args.use_plr,
+    ))
 
 
 if __name__ == "__main__":

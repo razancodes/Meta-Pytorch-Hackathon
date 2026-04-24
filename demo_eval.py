@@ -362,7 +362,7 @@ SCRIPTED_ACTIONS = [
     ("write_to_case_file", {"note": "Subject is PEP, connected to Minister of Finance. High risk."}, "Save PEP finding to disk before RAM eviction"),
     ("query_transactions", {"customer_id": "CUST-1MDB-001"}, "Analyze transaction history"),
     ("search_compliance_manual", {"query": "layering wire transfer offshore"}, "Look up compliance rules"),
-    ("update_system_prompt", {"directive": "Apply enhanced due diligence for PEP with offshore transfers"}, "Inject compliance rule into kernel"),
+    ("update_system_prompt", {"rule": "Apply enhanced due diligence for PEP with offshore transfers"}, "Inject compliance rule into kernel"),
     ("trace_network", {"entity_id": "ENT-GSTAR-001"}, "Trace Golden Star Holdings network"),
     ("write_to_case_file", {"note": "Golden Star and Arabella share registered address in Seychelles. Classic layering."}, "Persist network findings"),
     ("check_watchlist", {"entity": "CUST-1MDB-001"}, "Check subject against sanctions lists"),
@@ -372,7 +372,7 @@ SCRIPTED_ACTIONS = [
     ("get_customer_profile", {"customer_id": "ENT-ARBL-001"}, "Profile the second shell company while waiting"),
     ("check_source_of_funds", {"transaction_id": "TXN-1MDB-005"}, "Check the $30M consulting fee source"),
     # Now retrieve async
-    ("retrieve_async_result", {"job_id": "REQ-001"}, "Retrieve the completed wire trace"),
+    ("retrieve_async_result", {"job_id": "__LAST_JOB_ID__"}, "Retrieve the completed wire trace"),
     ("file_sar", {
         "typology": "layering",
         "entities_involved": ["CUST-1MDB-001", "ENT-GSTAR-001", "ENT-ARBL-001"],
@@ -475,15 +475,28 @@ def run_scripted_demo(output_dir: str) -> None:
     print(f"  Alert: {obs.tool_result['alert']['alert_id']}")
     print(f"  Subject: {obs.tool_result['alert']['customer_id']}\n")
 
+    last_job_id = None  # MED-6: dynamically captured from request_wire_trace response
+
     for step_num, (tool, params, reasoning) in enumerate(SCRIPTED_ACTIONS, 1):
+        # Substitute sentinel with dynamically captured job ID
+        if "__LAST_JOB_ID__" in str(params):
+            if last_job_id is None:
+                print("  ⚠ No job_id captured yet — using fallback REQ-001")
+                last_job_id = "REQ-001"
+            params = {k: (last_job_id if v == "__LAST_JOB_ID__" else v) for k, v in params.items()}
+
         action = {"tool": tool, "parameters": params}
         obs = env.step(AMLAction(tool=tool, parameters=params))
+
+        # Capture job_id from async request responses
+        if tool == "request_wire_trace" and isinstance(obs.tool_result, dict):
+            last_job_id = obs.tool_result.get("job_id", last_job_id)
 
         recorder.record_step(step_num, action, obs, reasoning)
         reward = obs.reward if obs.reward is not None else 0.0
 
         print(f"  Step {step_num:>2} | {tool:<30} | R={reward:+.4f} | {'DONE' if obs.done else 'ok'}")
-        print(f"           └─ {reasoning}")
+        print(f"           \u2514\u2500 {reasoning}")
 
         if obs.done:
             break

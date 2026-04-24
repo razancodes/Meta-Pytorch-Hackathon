@@ -1,7 +1,8 @@
 # Memex PPO Training Guide
 
 > Complete training pipeline for the Memex OS-Agent Benchmark.
-> Supports three tiers: **L4 PPO (8B)** for ablation, **L4 GRPO (8B)** for critic-free training, and **A100 cluster (70B)** for scalability proof.
+> **PPO is the production training path.** Self-play (Launderer vs Defender) is the primary adversarial loop.
+> GRPO is experimental/ablation only. DPO handles offline refinement from human corrections.
 
 ---
 
@@ -21,9 +22,9 @@
 ## Tier 1: L4 Training (8B Model)
 
 **Target:** Colab Pro L4 (24 GB VRAM)
-**Script:** `train_ppo.py` (PPO) / `train_grpo.py` (GRPO)
+**Script:** `train_ppo.py` (standalone) / `train_defender_ppo.py` + `train_launderer_ppo.py` (self-play)
 **Model:** `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit`
-**Peak VRAM:** ~10 GB (PPO) / ~8.5 GB (GRPO)
+**Peak VRAM:** ~10 GB (PPO) / ~12 GB (self-play with model swap)
 
 ### Colab Setup (Copy-Paste Cells)
 
@@ -31,19 +32,23 @@
 %%capture
 # ═══════════════════════════════════════════════════════════
 # CELL 1: Install Training Stack
-# Runtime → GPU → T4 (free) or A100 (Pro)
+# Runtime → GPU → L4 (Colab Pro) or T4 (free tier)
 # ═══════════════════════════════════════════════════════════
+#
+# ⚠️ DO NOT install flash-attn separately!
+# Unsloth uses its own custom Triton attention kernels that are
+# faster than FlashAttention-2, and falls back to PyTorch SDPA
+# automatically. Installing flash-attn compiles from source
+# (~20-45 min on L4) and wastes Compute Units for zero benefit.
+# None of our training scripts import or reference flash-attn.
 
 import torch
-major, minor = torch.cuda.get_device_capability()
-print(f"GPU: {torch.cuda.get_device_name(0)} | Compute: {major}.{minor}")
+print(f"GPU: {torch.cuda.get_device_name(0)}")
+print(f"Compute Capability: {torch.cuda.get_device_capability()}")
+print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-# Unsloth — 4-bit quantized model loading + LoRA
+# Unsloth — 4-bit quantized model loading + LoRA + Triton attention
 !pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-
-# Flash Attention (Ampere+ only, skip on T4)
-if major >= 8:
-    !pip install --no-deps packaging ninja einops "flash-attn>=2.6.3"
 
 # RL + adapter stack
 !pip install --no-deps trl peft accelerate bitsandbytes
@@ -85,7 +90,7 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 5: Full PPO training with PLR (~2.5 hours on L4)
+# CELL 5: Full PPO training with PLR (~2 hours on L4)
 # ═══════════════════════════════════════════════════════════
 
 import wandb
@@ -104,10 +109,35 @@ wandb.login()
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 5b: GRPO training with PLR (alternative, critic-free)
+# CELL 5c: Self-Play training (Launderer vs Defender)
+# Alternating best-response: Warmup → Launderer → Defender
+# Only one model loaded at a time (L4-safe)
 # ═══════════════════════════════════════════════════════════
 
-!python train_grpo.py \
+!python self_play.py \
+    --outer-rounds 3 \
+    --defender-warmup 20 \
+    --launderer-iters 10 \
+    --defender-iters 15 \
+    --wandb-project memex-selfplay
+
+# Or individual agent training:
+# Defender only (procedural scenarios)
+# !python train_defender_ppo.py --dry-run --scenario-source procedural
+
+# Launderer only
+# !python train_launderer_ppo.py --dry-run
+```
+
+```python
+# ═══════════════════════════════════════════════════════════
+# CELL 5b: GRPO training (EXPERIMENTAL — ablation only)
+# ⚠️ GRPO lacks importance-ratio clipping, uses |KL| instead
+# of forward KL, and has gradient-magnitude coupling to group
+# size. Use train_ppo.py for production. Requires --experimental.
+# ═══════════════════════════════════════════════════════════
+
+!python train_grpo.py --experimental \
     --lr 2e-4 \
     --lora-r 16 \
     --group-size 4 \
@@ -243,7 +273,7 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 | `lr` | `5e-6` | `2e-4` | `2e-6` | Higher LR for GRPO (critic-free); lower for 70B |
 | `kl_coef` | `0.05` | `0.05` | `0.03` | KL penalty weight against frozen base |
 | `entropy_coef` | `0.05` | `0.05` | `0.05` | Exploration bonus |
-| `clip_eps` | `0.2` | `0.2` | `0.2` | Standard PPO clipping |
+| `clip_eps` | `0.2` | N/A (raw REINFORCE) | `0.2` | Standard PPO clipping (GRPO lacks this) |
 | `reward_clip` | `2.0` | `2.0` | `2.0` | Return clipping bound |
 | `grad_accum_steps` | `4` | `4` | `8` | Effective batch size |
 | `max_grad_norm` | `1.0` | `1.0` | `0.5` | Tighter gradient clipping for 70B |
@@ -270,6 +300,7 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 | Config | GPU | VRAM | Script | Model | Est. 50 iters |
 |--------|-----|------|--------|-------|---------------|
 | Colab Free | T4 | 15 GB | `train_ppo.py` | 8B 4-bit | ~2.5 hrs |
+| Colab Pro | L4 | 24 GB | `train_ppo.py` / `self_play.py` | 8B 4-bit | ~2 hrs |
 | Colab Pro | A100-40GB | 40 GB | `train_ppo.py` | 8B 4-bit | ~50 min |
 | On-site | 4× A100-80GB | 320 GB | `train_ppo_70b.py` | 70B 4-bit | ~4 hrs |
 | On-site | 8× A100-80GB | 640 GB | `train_ppo_70b.py` | 70B 4-bit | ~2 hrs |
@@ -280,22 +311,28 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 
 | File | Purpose |
 |------|---------|
+| **Self-Play Pipeline** | |
+| `self_play.py` | **Alternating best-response orchestrator** (Warmup → Launderer → Defender × N rounds) |
+| `train_defender_ppo.py` | Defender PPO with GAE (λ=0.95), mixed scenarios, entity-F1/typology tracking |
+| `train_launderer_ppo.py` | Launderer single-step PPO (generates evasive scenarios to fool Defender) |
+| `server/launderer_env.py` | One-step MDP for Launderer (validates JSON, runs frozen Defender, computes reward) |
+| **Standalone Training** | |
 | `train_ppo.py` | Step-level PPO (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
-| `train_grpo.py` | Group Relative Policy Optimization (no critic, group-relative advantage) |
+| `train_grpo.py` | Group Relative Policy Optimization (**EXPERIMENTAL** — no clipping, `\|KL\|`, gradient coupling) |
 | `train_ppo_70b.py` | Multi-GPU PPO (DeepSpeed ZeRO-3, A100 cluster, proof of scalability) |
 | `train_dpo.py` | Offline DPO trainer (continuous learning from user corrections) |
-| `train_adversary.py` | GAN-style adversarial battle loop for generating DPO scenarios |
+| `train_adversary.py` | Adversarial scenario generator & heuristic filter (**DEPRECATED** — use `self_play.py`) |
+| **Infrastructure** | |
 | `hotswap.py` | Zero-downtime LoRA adapter hot-swap utility |
 | `demo_eval.py` | 1MDB demo with AGUI replay capture |
 | `curriculum/plr_engine.py` | PLR buffer: regret-weighted scenario sampling |
 | `curriculum/oracle.py` | Proxy regret oracle (`1.0 - protagonist_score`) |
 | `server/aml_environment.py` | Core environment (18 tools + OS mechanics) |
-| `scenarios/procedural_generator.py` | Procedural POMDP scenario builder |
+| `scenarios/procedural_generator.py` | Procedural POMDP scenario builder (emits `is_suspicious` ground truth) |
 | `scenarios/adversary_agent.py` | Local Llama-3.1-8B evasive scenario generator |
-| `adversarial_successes.db` | SQLite database storing failed scenarios for DPO |
 | `graders/grader.py` | Dense reward engine (per-step + terminal) |
-| `state_manager.py` | OS mechanics (RAM, Disk, Async Queue, Kernel) |
-| `models.py` | Pydantic type definitions (incl. CurriculumState) |
+| `state_manager.py` | OS mechanics (RAM, Disk, Async Queue, Kernel with finite mode set) |
+| `models.py` | Pydantic type definitions (incl. `TypologyEnum`, `CurriculumState`) |
 | `tests/test_smoke.py` | Environment verification (8/8 tests) |
 | `tests/test_plr.py` | PLR engine unit tests |
 | `checkpoints/` | Training output (LoRA adapters + tokenizer + PLR buffer) |
@@ -307,9 +344,17 @@ Stable checkpoints are saved only when `entropy > 0.05 AND mean_score > 0.3`. Ma
 
 ---
 
-## Adversarial "GAN-Style" Training Loop
+## Adversarial Scenario Generation
 
-To generate challenging negative examples for the DPO pipeline, Memex includes an adversarial scenario generator that plays the role of a "money launderer" attempting to evade the Defender agent.
+### Self-Play (Production Path)
+
+The **primary adversarial approach** is the two-agent self-play loop in `self_play.py`, where a Launderer-8B generates evasive scenarios and a Defender-8B learns to investigate them. See Cell 5c above.
+
+### Legacy Heuristic Filter (Deprecated)
+
+The legacy `train_adversary.py` generates scenarios and filters them through a static heuristic function. This is an **offline data curation tool**, not true self-play.
+
+> **⚠️ Deprecated:** Use `self_play.py` for true adversarial training. The heuristic filter remains available for offline DPO data generation.
 
 ### Setup
 

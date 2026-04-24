@@ -583,7 +583,10 @@ class AMLEnvironment(Environment):
 
         self._state.findings.extend(findings)
 
-        final_score = self._grader.grade(
+        # Build OS metrics from accumulated state
+        os_metrics = self._build_os_metrics()
+
+        grader_result = self._grader.grade(
             ground_truth=self._current_scenario.ground_truth,
             decision="file_sar",
             findings=findings,
@@ -591,7 +594,9 @@ class AMLEnvironment(Environment):
             typology=typology,
             state=self._state,
             ubo_identified=ubo_identified,
+            os_metrics=os_metrics,
         )
+        final_score = grader_result["total"]
         self._state.accumulated_reward = final_score
 
         result = {
@@ -602,12 +607,13 @@ class AMLEnvironment(Environment):
             "evidence_chain": evidence_chain[:500] if evidence_chain else None,
             "ubo_identified": ubo_identified,
             "final_score": final_score,
-            "grader_breakdown": self._build_grader_breakdown(
-                "file_sar", findings, entities_involved, typology, final_score
-            ),
+            "detection": grader_result["detection"],
+            "grader_breakdown": grader_result["components"],
+            "os_metrics": grader_result["os_metrics"],
         }
         message = (
             f"SAR filed successfully. Final episode score: {final_score:.4f}. "
+            f"Detection: {grader_result['detection']}. "
             f"Typology: {typology}. Entities flagged: {entities_involved}."
         )
         return result, message, True, {}
@@ -625,26 +631,32 @@ class AMLEnvironment(Environment):
 
         self._state.findings.extend(findings)
 
-        final_score = self._grader.grade(
+        # Build OS metrics from accumulated state
+        os_metrics = self._build_os_metrics()
+
+        grader_result = self._grader.grade(
             ground_truth=self._current_scenario.ground_truth,
             decision="close_alert",
             findings=findings,
             entities_flagged=entities_involved,
             typology=typology,
             state=self._state,
+            os_metrics=os_metrics,
         )
+        final_score = grader_result["total"]
         self._state.accumulated_reward = final_score
 
         result = {
             "alert_closed": True,
             "reason": reason,
             "final_score": final_score,
-            "grader_breakdown": self._build_grader_breakdown(
-                "close_alert", findings, entities_involved, typology, final_score
-            ),
+            "detection": grader_result["detection"],
+            "grader_breakdown": grader_result["components"],
+            "os_metrics": grader_result["os_metrics"],
         }
         message = (
-            f"Alert closed as false positive. Reason: {reason}. "
+            f"Alert closed. Reason: {reason}. "
+            f"Detection: {grader_result['detection']}. "
             f"Final episode score: {final_score:.4f}."
         )
         return result, message, True, {}
@@ -795,23 +807,37 @@ class AMLEnvironment(Environment):
         return result, message, False, {}
 
     def _handle_update_system_prompt(self, params: Dict[str, Any]) -> Tuple[Dict, str, bool, Dict]:
-        """Inject a compliance rule into the agent's kernel directives."""
-        rule = params.get("rule", params.get("directive", params.get("content", "")))
+        """Inject a compliance rule into the agent's kernel directives.
+
+        Accepts 'mode' (preferred) or 'rule'/'directive' (fallback).
+        Only valid kernel modes are accepted (see StateManager.KERNEL_MODES).
+        """
+        rule = params.get("mode", params.get("rule", params.get("directive", params.get("content", ""))))
         if not rule:
             return (
-                {"error": "Missing 'rule' parameter"},
-                "update_system_prompt requires a 'rule' parameter (the text to inject).",
+                {"error": "Missing 'mode' parameter", "valid_modes": sorted(self._sm.KERNEL_MODES)},
+                "update_system_prompt requires a 'mode' parameter. "
+                f"Valid modes: {sorted(self._sm.KERNEL_MODES)}",
                 False,
                 {},
             )
 
-        self._sm.inject_directive(rule, self._state.step_count)
+        try:
+            self._sm.inject_directive(rule, self._state.step_count)
+        except ValueError as e:
+            return (
+                {"error": str(e), "valid_modes": sorted(self._sm.KERNEL_MODES)},
+                str(e),
+                False,
+                {},  # No meta_injection reward for invalid mode
+            )
+
         result = {
             "injected": True,
             "directive_count": len(self._sm.kernel_directives),
-            "rule_added": rule[:100] + ("..." if len(rule) > 100 else ""),
+            "mode_activated": rule,
         }
-        message = f"Kernel directive injected. Total directives: {len(self._sm.kernel_directives)}."
+        message = f"Kernel mode '{rule}' activated. Total directives: {len(self._sm.kernel_directives)}."
         return result, message, False, {"meta_injection": True}
 
     def _handle_check_market_price(self, params: Dict[str, Any]) -> Tuple[Dict, str, bool, Dict]:
@@ -1020,6 +1046,19 @@ class AMLEnvironment(Environment):
         """Stable hash of a tool call for redundancy detection."""
         payload = json.dumps({"tool": tool, "params": params}, sort_keys=True)
         return hashlib.md5(payload.encode()).hexdigest()
+
+    def _build_os_metrics(self) -> Dict[str, int]:
+        """Extract OS metric counts from AMLState for the grader."""
+        return {
+            "page_fault_count": self._state.page_fault_count,
+            "case_writes_critical": self._state.successful_pages,
+            "async_premature_polls": self._state.async_timeout_count,
+            "async_successful_polls": max(0,
+                getattr(self._state, 'async_poll_count', 0)
+                - self._state.async_timeout_count
+            ),
+            "kernel_mode_uses": self._state.kernel_inject_reward_count,
+        }
 
     def _build_grader_breakdown(
         self,

@@ -29,6 +29,12 @@ from models import (
 # Constants
 # ---------------------------------------------------------------------------
 
+# RAM_CAPACITY deliberately set to 2 (not higher) to make memory management
+# a meaningful challenge. With only 2 observation slots, the agent MUST learn
+# to use write_to_case_file (disk I/O) proactively before older observations
+# are evicted. This is the core OS-mechanic that separates reactive agents
+# from strategic ones. Agent also has 3 disk writes + 2 kernel slots for
+# additional context. RAM=3+ trivializes easy/medium scenarios.
 RAM_CAPACITY: int = 2          # Max observation summaries held in context
 BASE_DIRECTIVE: str = "You are an AML compliance investigator. Gather evidence, assess risk, and decide: file_sar or close_alert."
 
@@ -223,13 +229,32 @@ class StateManager:
             if j.status != AsyncJobStatus.RETRIEVED
         ]
 
-    # ------------------------------------------------------------------ #
-    # Kernel — Mutable System Prompt                                       #
-    # ------------------------------------------------------------------ #
+    # Finite set of valid kernel modes — no arbitrary prompt injection
+    KERNEL_MODES: set = {
+        "enhanced_due_diligence",
+        "structuring_detection",
+        "trade_based_ml_detection",
+        "sanctions_screening",
+        "mule_ring_detection",
+        "high_risk_jurisdiction",
+    }
 
     def inject_directive(self, rule: str, step: int) -> None:
-        """Append a compliance rule to the kernel directives."""
-        self._kernel.append(f"Added (Step {step}): {rule}")
+        """Append a compliance rule to the kernel directives.
+
+        Args:
+            rule: Must be a valid kernel mode from KERNEL_MODES.
+
+        Raises:
+            ValueError: If the rule is not in KERNEL_MODES.
+        """
+        mode = rule.lower().strip().replace(" ", "_").replace("-", "_")
+        if mode not in self.KERNEL_MODES:
+            raise ValueError(
+                f"Invalid kernel mode '{rule}'. "
+                f"Valid modes: {sorted(self.KERNEL_MODES)}"
+            )
+        self._kernel.append(f"[Step {step}] MODE: {mode}")
 
     @property
     def kernel_directives(self) -> List[str]:

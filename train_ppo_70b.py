@@ -545,13 +545,9 @@ class MemexPPO70B:
         clip = self.cfg.reward_clip
         returns = [max(-clip, min(clip, r)) for r in returns]
 
+        # Per-episode normalization: no cross-difficulty contamination
         mean_return = sum(returns) / T
-        self._reward_ema = (
-            self._reward_ema_alpha * mean_return
-            + (1 - self._reward_ema_alpha) * self._reward_ema
-        )
-
-        advs = [r - self._reward_ema for r in returns]
+        advs = [r - mean_return for r in returns]
         std = max((sum(a**2 for a in advs) / T) ** 0.5, 1e-8)
         for t in range(T):
             steps[t].advantage = advs[t] / std
@@ -606,9 +602,9 @@ class MemexPPO70B:
                     ) * adv
                     policy_loss = -torch.min(surr1, surr2)
 
-                    # KL penalty against frozen base
+                    # KL penalty against frozen base (abs prevents negative KL rewarding divergence)
                     kl = new_lp - step.ref_log_prob
-                    kl_loss = self.cfg.kl_coef * kl
+                    kl_loss = self.cfg.kl_coef * kl.abs()
 
                     loss = policy_loss + kl_loss - self.cfg.entropy_coef * entropy
 

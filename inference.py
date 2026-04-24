@@ -276,7 +276,7 @@ def run_task(task_id: str, llm: OpenAI) -> Dict[str, Any]:
                 break
 
     finally:
-        final_score = max(0.001, min(0.999, float(final_score)))
+        final_score = max(-1.0, min(1.0, float(final_score)))
         log_end(success=success, steps=step_num, score=final_score, rewards=step_rewards)
     return {"score": final_score}
 
