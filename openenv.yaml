@@ -6,7 +6,7 @@ app: openenv_server:app
 port: 8000
 
 models:
-  - name: "Qwen/Qwen2.5-72B-Instruct"
+  - name: "unsloth/Qwen2.5-7B-Instruct-bnb-4bit"
 
 tasks:
   - id: "easy"
