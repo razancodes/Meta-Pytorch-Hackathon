@@ -78,6 +78,3 @@ validate-curl-*
 # Dev artifacts
 design-skills/
 .cursor/
-
-# Built frontend (generated from frontend/ source)
-static_frontend/
