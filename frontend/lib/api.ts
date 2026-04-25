@@ -2,7 +2,7 @@
 // MEMEX — API Client (Live Mode)
 // ═══════════════════════════════════════════════════════════════
 
-import { StepResponse } from './types';
+import { StepResponse, AGUIState } from './types';
 
 // When served from HF Spaces (same origin as FastAPI), use '' for same-origin.
 // In local dev, NEXT_PUBLIC_API_URL can point to the backend.
@@ -49,6 +49,19 @@ export async function stepEnvironment(
 
 export async function getState(): Promise<Record<string, unknown>> {
   return apiFetch('/state');
+}
+
+/**
+ * Fetch the current AGUI state from the backend.
+ * The /state endpoint returns the full AMLState which includes agui_state.
+ */
+export async function getAGUIState(): Promise<AGUIState | null> {
+  try {
+    const state = await getState();
+    return (state as any)?.agui_state ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function isBackendAvailable(): Promise<boolean> {
