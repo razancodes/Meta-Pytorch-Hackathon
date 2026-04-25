@@ -34,7 +34,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
 from models import AMLAction
-from scenarios.procedural_generator import ProceduralGenerator, GeneratedScenario
+from scenarios.procedural_generator import ScenarioGenerator, GeneratedScenario
 from server.aml_environment import AMLEnvironment
 from state_manager import StateManager
 
@@ -302,7 +302,7 @@ def run_scenario(eval_scenario: EvalScenario, verbose: bool = True) -> ScenarioR
 
     try:
         # Generate a procedural scenario matching the typology
-        generator = ProceduralGenerator()
+        generator = ScenarioGenerator()
         scenario = generator.generate(
             typology=eval_scenario.typology,
             difficulty=eval_scenario.difficulty,
