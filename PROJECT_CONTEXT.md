@@ -1,7 +1,7 @@
 # Memex: Project Context
 
 > Living document tracking the current state of the Memex OS-Agent Benchmark.
-> Last updated: 2026-04-24
+> Last updated: 2026-04-25
 
 ## What Is Memex?
 
@@ -17,27 +17,41 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **Models** | `models.py` | Single source of truth for all Pydantic types: `AMLAction`, `AMLObservation`, `AMLState`, `AsyncJobInfo`, `AGUIState`, `CurriculumState` |
-| **State Manager** | `state_manager.py` | OS mechanics engine: RAM eviction (2-slot context), Disk persistence, Async Job Queue, Kernel Directives |
+| **Models** | `models.py` | Single source of truth for Pydantic types: `AMLAction`, `AMLObservation`, `AMLState` (with `submitted_typology`, `entities_flagged`, `decision_action`, `async_poll_count`), `AsyncJobInfo`, `AGUIState`, `CurriculumState` |
+| **State Manager** | `state_manager.py` | OS mechanics engine: RAM eviction (2-slot context), Disk persistence, Async Job Queue, Kernel Directives. Entity ID regex matches procedural alphanum patterns (`CUST[A-Z0-9]{3,6}`, `ENT`, `TXN`) |
 | **Procedural Generator** | `scenarios/procedural_generator.py` | Dynamic POMDP scenario builder: 3 typologies × 3 difficulties, unique IDs per episode |
-| **Adversary Agent** | `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator (local Llama-3.1-8B or procedural fallback) |
-| **Battle Orchestrator** | `train_adversary.py` | GAN-style adversarial loop that tests the Defender and saves evasive graphs to SQLite |
-| **Adversarial DB** | `adversarial_successes.db` | SQLite database storing failed scenarios (negative examples for DPO) |
-| **Compliance Manual** | `scenarios/compliance_manual.py` | Searchable AML rule corpus for kernel updates |
-| **Environment** | `server/aml_environment.py` | Core environment: 18 tool handlers + State Manager integration |
-| **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + terminal composite score [-1.0, +1.0] |
+| **Environment** | `server/aml_environment.py` | Core environment: 18 tool handlers + State Manager integration + scenario injection support for self-play |
+| **Launderer Env** | `server/launderer_env.py` | One-step MDP for Launderer training: robust 3-strategy JSON extraction, schema validation, shaped reward tiers, VRAM-safe frozen Defender scoring |
+| **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + terminal composite score [-1.0, +1.0]. Recognizes `false_positive` as clean-scenario typology |
 | **OpenEnv Server** | `openenv_server.py` | Production FastAPI entrypoint — OpenEnv SDK `create_app()` + standalone fallback |
 | **Legacy Server** | `server/app.py` | FastAPI HTTP server (dual-mode: OpenEnv / standalone, used by trainers) |
 | **Client** | `client.py` | HTTP client with all 18 tool wrappers |
 | **Inference** | `inference.py` | ReAct agent loop with OS-mechanic awareness |
-| **PPO Trainer (L4)** | `train_ppo.py` | Custom step-level PPO (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
-| **GRPO Trainer (L4)** | `train_grpo.py` | Group Relative Policy Optimization (no critic, group-relative advantage) |
-| **PPO Trainer (70B)** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster (proof of scalability) |
-| **DPO Trainer** | `train_dpo.py` | Offline DPO continuous learning from user preference pairs |
+
+### Self-Play Training Pipeline
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **Self-Play Orchestrator** | `self_play.py` | **Production training path.** Alternating best-response: Warmup → [Launderer → Defender] × N rounds. Population-based checkpoint management. Linear mix ratio schedule (0.3 → 0.7). Real score propagation from trainers |
+| **Defender PPO** | `train_defender_ppo.py` | Step-level PPO with GAE (γ=0.99, λ=0.95). Mixed-mode training (procedural + Launderer scenarios). Entity F1, typology accuracy, decision label (TP/TN/FP/FN) tracking. Terminal reward de-duplication to prevent GAE double-counting |
+| **Launderer PPO** | `train_launderer_ppo.py` | Single-step MDP PPO. Generates evasive scenario JSON, scored against frozen Defender. VRAM-safe full unload/reload cycle. KL auto-revert with advantage variance guard |
+| **Standalone PPO** | `train_ppo.py` | Legacy step-level PPO (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
+| **GRPO** | `train_grpo.py` | Group Relative Policy Optimization (**EXPERIMENTAL** — no clipping, gradient coupling, requires `--experimental`) |
+| **PPO 70B** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster (proof of scalability) |
+| **DPO** | `train_dpo.py` | Offline DPO continuous learning from user preference pairs |
+| **Adversary (Legacy)** | `train_adversary.py` | GAN-style heuristic adversarial loop (**DEPRECATED** — use `self_play.py`) |
+
+### Infrastructure
+
+| Component | File | Purpose |
+|-----------|------|---------|
 | **LoRA Hot-Swap** | `hotswap.py` | Zero-downtime LoRA adapter reload into running models |
 | **PLR Engine** | `curriculum/plr_engine.py` | Prioritized Level Replay: regret-weighted scenario sampling buffer |
 | **Proxy Oracle** | `curriculum/oracle.py` | Regret computation: `1.0 - protagonist_score` |
 | **Demo** | `demo_eval.py` | 1MDB-inspired demo with AGUI replay capture |
+| **Eval Harness** | `eval_harness.py` | Checkpoint benchmarking across typology/difficulty grid |
+| **Adversary Agent** | `scenarios/adversary_agent.py` | LLM-backed evasive scenario generator (local Llama-3.1-8B or procedural fallback) |
+| **Compliance Manual** | `scenarios/compliance_manual.py` | Searchable AML rule corpus for kernel updates |
 | **Tests** | `tests/test_smoke.py` | 8 end-to-end smoke tests |
 | **PLR Tests** | `tests/test_plr.py` | PLR engine unit tests |
 
@@ -52,6 +66,7 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
    - `request_wire_trace(entity_id)` → background job with 2–4 step ETA
    - `retrieve_async_result(job_id)` → fetch when ETA=0
    - Async Timeout: premature retrieval → -0.10 penalty
+   - `async_poll_count` tracked in `AMLState` for correct success rate computation
 
 3. **Kernel Updates (Self-Improvement)**
    - `search_compliance_manual(query)` → find AML rules
@@ -120,60 +135,84 @@ The backend is invisible by design — an LLM managing RAM eviction and async qu
 
 **Data contract:** `state_manager.py` builds the `AGUIState` object (defined in `models.py`) containing `ram_usage` (capacity string + active context list), `disk_storage` (list of persisted findings), `async_jobs` (job IDs with ETAs and statuses), `kernel_directives` (base + agent-injected rules), and `curriculum` (PLR buffer state: enabled flag, buffer_size, mean_regret, max_regret, difficulty gauge, diversity score). This payload is nested inside `observation.metadata.agui_state` on every `/step` response.
 
-The frontend renders a **5th panel** (`CurriculumPanel.tsx`) below the terminal when `curriculum.enabled === true`, showing regret bars, difficulty gauges, and buffer coverage.
-
-**Frontend replay:** `demo_eval.py` captures per-step AGUI snapshots as `step_NNN.json` files in `demo_output/`. The Next.js frontend reads these sequentially to replay the full investigation as an animated OS simulation — judges see the agent's RAM filling, data paging to disk, async jobs completing, and kernel directives accumulating in real time.
+**Frontend replay:** `demo_eval.py` captures per-step AGUI snapshots as `step_NNN.json` files in `demo_output/`. The Next.js frontend reads these sequentially to replay the full investigation as an animated OS simulation.
 
 ---
 
-## Multi-Agent Adversarial Training
+## Two-Agent Self-Play Architecture
 
-Memex includes a **GAN-style adversarial training loop** where a **Launderer** agent (adversary) generates evasive AML scenarios and a **Defender** agent (PPO policy) must crack them.
+The **production adversarial training approach** is two-agent PPO self-play, replacing the legacy heuristic-based `train_adversary.py`.
 
 ### Architecture
 
 ```
 ┌─────────────────────────┐                   ┌─────────────────────────┐
 │    LAUNDERER AGENT       │                   │     DEFENDER AGENT      │
-│  (adversary_agent.py)    │    scenario       │      (train_ppo.py)     │
-│                          │ ───────────────>  │                         │
-│  Action space:           │                   │  Action space:          │
-│   • Shells, hops, decoys │    defender       │   • 18 investigation    │
-│   • Jurisdictions        │ <───────────────  │     tools               │
-│   • Timing patterns      │    reward         │                         │
-│   • Evasion techniques   │                   │  Terminal reward from   │
-│                          │                   │  grader.py              │
-└──────────┬──────────────┘                   └─────────────────────────┘
-           │
-           │  If defender fails (score < threshold)
-           ▼
-   ┌───────────────────────┐
-   │ adversarial_successes │
-   │        .db            │ ──── DPO pipeline negative examples
-   │  (SQLite + WAL mode)  │
-   └───────────────────────┘
+│ (train_launderer_ppo.py) │    scenario       │ (train_defender_ppo.py) │
+│                          │ ───────────────►  │                         │
+│  Single-step MDP:        │                   │  Multi-step MDP:        │
+│   Generate evasive JSON  │  -defender_score  │   18 investigation      │
+│   Schema-validated       │ ◄───────────────  │   tools, 25 steps max   │
+│   3-strategy extraction  │   = launderer     │                         │
+│                          │     reward        │  Tracks: decision_action│
+│  LoRA on Llama-3.1-8B    │                   │  submitted_typology,    │
+│  VRAM: ~6 GB loaded      │                   │  entities_flagged       │
+└──────────────────────────┘                   └─────────────────────────┘
+         ▲                                              │
+         │              self_play.py                     │
+         │    ┌──────────────────────────────┐           │
+         └────┤  Orchestrator               ├───────────┘
+              │  Phase 1: Warm-start (20i)  │
+              │  Phase 2: Launderer (10i)   │
+              │  Phase 3: Defender (15i)    │
+              │  × 3 outer rounds           │
+              │  Mix: 0.3 → 0.7 (linear)   │
+              │  Population best() tracking │
+              └──────────────────────────────┘
 ```
 
-### Loop (orchestrated by `train_adversary.py`)
+### Key Design Decisions
 
-1. **Adversary Generation:** The launderer generates a fully-specified AML scenario — transaction graph, entity profiles, evasion techniques (mule rings, shell pass-throughs, phantom invoices). Uses a local Llama-3.1-8B model or procedural fallback (no API key needed).
-2. **Defender Evaluation:** The defender runs a full investigation in the Memex environment. Terminal reward is computed by `grader.py`.
-3. **Persistence:** If the defender underperforms (score < threshold), the evasive scenario is recorded in `adversarial_successes.db` with metadata (difficulty, typology, reward, evasion techniques).
-4. **Continuous Learning:** These high-evasion scenarios seed the DPO pipeline as hard negative examples, hardening the agent against novel typologies.
+1. **VRAM-Safe Model Swapping:** Full unload/reload (not LoRA adapter swap) between agents. Zero shared state guaranteed. Both agents use ~6 GB loaded, ~12 GB during training. Peak VRAM never exceeds 13 GB on L4 (24 GB available).
 
-### Theoretical Motivation
+2. **Directional KL Penalty:** All 3 trainers use `kl.clamp(min=0)` (not `kl.abs()`) — only penalizes divergence FROM reference model, does not penalize convergence TOWARD it.
 
-The launderer-vs-defender loop approximates a **zero-sum Markov game**. The launderer's reward is the negative of the defender's terminal score, creating a self-generated difficulty curriculum that drives robustness without requiring hand-crafted hard scenarios.
+3. **Terminal Reward De-Duplication:** The Defender's GAE advantage computation subtracts prior step reward sum from the terminal composite score to prevent double-counting.
+
+4. **Scenario Injection:** `AMLEnvironment.reset()` accepts an optional `scenario` parameter, allowing Launderer-generated scenarios to be injected during Phase 3 mixed training.
+
+5. **Population Checkpointing:** `self_play.py` maintains a `CheckpointPopulation` that tracks `best_score` per agent per round, selecting the actual best checkpoint for adversarial scoring.
+
+### Launderer Reward Shaping
+
+| Outcome | Reward | Description |
+|---------|--------|-------------|
+| JSON parse fail | -2.0 | No extractable JSON from model output |
+| Schema fail | -1.0 | JSON found but missing required fields |
+| Valid, Defender catches | 0.1 – 0.3 | Valid scenario, but Defender succeeds |
+| Valid, Defender fails | 0.3 – 1.0 | Maximum: Defender fully fooled |
+
+Formula: `reward = 0.1 + 0.9 × (1.0 - clamp(defender_score, -1, 1)) / 2.0`
+
+### Detection Metrics
+
+The Defender trainer tracks ground-truth metrics persisted directly in `AMLState`:
+
+| Metric | Source Field | Description |
+|--------|-------------|-------------|
+| Decision label | `st.decision_action` | `"file_sar"` or `"close_alert"` → TP/TN/FP/FN |
+| Typology accuracy | `st.submitted_typology` | Exact match vs `ground_truth.typology` |
+| Entity F1 | `st.entities_flagged` | Set intersection vs `ground_truth.key_entities` |
 
 ---
 
 ## L4 Training Pipeline & VRAM Optimization
 
-Training an 8B-parameter language model on consumer GPU hardware (NVIDIA L4, ~24GB VRAM) demands aggressive memory engineering. Our `train_ppo.py` implements a custom step-level PPO loop with three architectural decisions that make this possible:
+Training an 8B-parameter language model on consumer GPU hardware (NVIDIA L4, ~24GB VRAM) demands aggressive memory engineering.
 
 ### 1. Unsloth 4-bit Quantization + LoRA
 
-The base model (Meta-Llama-3.1-8B-Instruct) is loaded via Unsloth's `FastLanguageModel` in 4-bit NF4 quantization (~5GB VRAM). Only the LoRA adapter layers (rank 16, alpha 32) are trainable — roughly 0.5% of total parameters. This drops the trainable parameter footprint to ~40MB.
+The base model (Meta-Llama-3.1-8B-Instruct) is loaded via Unsloth's `FastLanguageModel` in 4-bit NF4 quantization (~5.5GB VRAM). Only the LoRA adapter layers (rank 16, alpha 32) are trainable — roughly 0.92% of total parameters (~42M trainable / 4.58B total).
 
 ### 2. The `disable_adapter()` Trick
 
@@ -181,34 +220,43 @@ Standard PPO requires a frozen reference model to compute the KL divergence pena
 
 Our solution: **one model, two modes.** During the forward pass, we call `model.disable_adapter()` to temporarily bypass the LoRA layers, producing reference logits from the frozen base weights. Then `model.enable_adapter()` restores the trainable policy. This yields an exact KL penalty with zero additional VRAM overhead.
 
-### 3. Step-Level Processing
+### 3. VRAM Budget (L4 = 24 GB)
 
-Rather than batching entire episodes (which would require storing all token sequences simultaneously), we process **one environment step at a time**. Each step: tokenize → forward → compute log-prob → accumulate into a trajectory buffer. Gradients are accumulated over 4 steps before a single optimizer update. Peak VRAM: **~10GB / 15GB** — comfortable headroom for the L4's memory.
+| Component | VRAM |
+|-----------|------|
+| Base 8B 4-bit (NF4) | ~5.5 GB |
+| LoRA adapters (r=16) | ~0.3 GB |
+| KV cache (2048 seq) | ~2.0 GB |
+| Optimizer (AdamW fp32) | ~1.2 GB |
+| Activations (gradient checkpoint) | ~3-6 GB |
+| **Total** | **~12-15 GB** |
+| **Headroom** | **~9 GB ✓** |
 
-**Colab/Kaggle deployment:** `TRAINING.md` provides 6 copy-paste cells: install stack → upload project → dry-run → train → evaluate → demo. Training 50 iterations on an L4 takes ~2.5 hours.
+> Only one model is loaded at a time during self-play. The Launderer and Defender never coexist in VRAM.
 
 ### 4. PPO Stability Engineering
 
-The training loop includes production-grade safety features to prevent policy collapse:
+Both trainers include **11 production-grade safety features:**
 
-- **Mean per-token KL:** Log-probabilities use `.mean()` (not `.sum()`), making the KL divergence penalty scale-invariant regardless of response length. This is critical — `.sum()` causes KL to explode proportionally to token count, dwarfing environmental rewards and causing learned helplessness.
-- **Entropy bonus:** A `- entropy_coef × H(π)` term in the PPO loss prevents the policy from collapsing to a single deterministic action. Set to 0.05 (5x stronger than initial value) after observing entropy death within 4 iterations.
-- **Ratio clamping:** `log_ratio` is clamped to `[-10, 10]` before `exp()` to prevent inf/NaN from policy drift between PPO epochs.
-- **Return clipping:** Discounted returns are clipped to `[-2.0, +2.0]` to bound gradient signals from outlier episodes.
-- **Empty response guard:** If the model generates 0 tokens, a dummy EOS token is substituted to prevent NaN from `.mean()` on an empty tensor.
-- **Fault-tolerant `env.step()`:** Each environment step is wrapped in try/except. Malformed actions that crash the handler receive a -0.10 penalty instead of terminating the entire episode.
-- **Degenerate response detection:** If a model response has >80% repeated tokens (e.g., "Search search search..."), the episode is terminated early with a -0.15 penalty.
-- **KL early stopping:** If mean KL exceeds ±15 during a PPO epoch, remaining epochs are skipped to prevent catastrophic gradient updates.
-- **Type-safe `parse_action()`:** All JSON parsing forces `params` to dict type, catches `TypeError`/`ValueError`, and never crashes regardless of model output.
-- **Auto-Revert ("Time Machine"):** Entropy heartbeat monitor detects collapse (entropy <0.01 ×2 iters, score ≤0 ×2 iters, |KL|>10) and auto-reverts to last stable checkpoint with bumped hyperparameters (entropy_coef ×1.5, temperature +0.1, lr ×0.7). Old optimizer state is explicitly freed before rebuild to prevent VRAM doubling. Max 5 reverts per run. On ZeRO-3, stable checkpoints use `GatheredParameters` to materialize full tensors from shards.
+- **Mean per-token KL:** `.mean()` not `.sum()` — scale-invariant KL divergence
+- **Directional KL:** `kl.clamp(min=0)` — only penalizes divergence from reference
+- **Entropy bonus:** `- entropy_coef × H(π)` prevents mode collapse
+- **Ratio clamping:** `clamp(log_ratio, -10, 10)` before `exp()` — prevents inf/NaN
+- **Return clipping:** `clip(returns, -2.0, +2.0)` — bounds gradient signals
+- **Empty response guard:** Dummy EOS prevents NaN from `.mean()` on empty tensor
+- **Degenerate response detection:** >80% repeated tokens → -0.15 penalty
+- **Fault-tolerant `env.step()`:** try/except → -0.10 penalty for malformed actions
+- **Type-safe `parse_action()`:** Forces `params` to dict, catches TypeError/ValueError
+- **KL early stopping:** Break PPO epochs if |KL| > 15
+- **Auto-Revert ("Time Machine"):** Entropy heartbeat + checkpoint reload with hyperparameter bump
 
 ### 5. DPO Continuous Learning Pipeline
 
 A human-in-the-loop feedback system for post-deployment improvement:
 
-- **Frontend:** Prisma-backed SQLite database (WAL mode for concurrent access) stores `PreferencePair` records (original prompt + rejected/chosen responses). Next.js API route (`/api/preferences`) exposes POST/GET/PATCH endpoints.
-- **DPO Trainer (`train_dpo.py`):** Pulls unconsumed pairs, runs DPO loss (`-log σ(β × Δ)`) against frozen base using the same `disable_adapter()` trick, with `clip_grad_norm_(1.0)` to prevent explosions from adversarial pairs. Saves updated LoRA adapters.
-- **Hot-Swap (`hotswap.py`):** Reloads updated adapters into a live model with zero downtime. Dual-method: PEFT `load_adapter()` → manual state dict injection fallback.
+- **Frontend:** Prisma-backed SQLite database stores `PreferencePair` records. Next.js API route (`/api/preferences`) exposes POST/GET/PATCH endpoints.
+- **DPO Trainer (`train_dpo.py`):** Pulls unconsumed pairs, runs DPO loss against frozen base using `disable_adapter()`, saves updated LoRA adapters.
+- **Hot-Swap (`hotswap.py`):** Reloads updated adapters into a live model with zero downtime.
 
 ---
 
@@ -216,80 +264,49 @@ A human-in-the-loop feedback system for post-deployment improvement:
 
 Memex uses a **dual-data architecture** to satisfy two orthogonal goals: RL generalization and judge persuasion.
 
-### The Gym — `procedural_generator.py`
+### The Gym — `procedural_generator.py` + `self_play.py`
 
-The training environment. Every call to `env.reset()` constructs a mathematically fresh POMDP graph:
-- Entity IDs are randomly generated (e.g., `CUST8X3F`, `ENT_A72`) — no static labels to memorize
-- Typology (structuring / layering / trade-based ML) is either specified or randomly selected
-- Difficulty scales noise: easy = 1 decoy, hard = 5+ decoys with deep fan-out networks
-- 9 unique combinations (3 typologies × 3 difficulties) ensure broad coverage
-
-This forces the PPO agent to learn **transferable OS mechanics** — when to page data to disk, when to fire async traces, when to inject compliance rules — rather than memorizing "if entity X, then file SAR."
+The training environment. `procedural_generator.py` creates mathematically fresh POMDP graphs. `self_play.py` adds adversarial scenarios from the Launderer. Entity IDs are randomly generated — no memorization possible. This forces the PPO agent to learn **transferable OS mechanics**.
 
 ### The Stage — `demo_eval.py`
 
-The presentation environment. A hardcoded, high-impact scenario inspired by the **1MDB sovereign wealth fund scandal**:
-- 5 named entities: Taek Jho Lowe (PEP), PetraStar Energy Fund, Golden Star Holdings (BVI shell), Arabian Blue Consulting (Seychelles), and a legitimate decoy (Chen Wei Trading)
-- 8 transactions totaling $681M in layered wire transfers + a $6M cover-up reversal
-- Ground truth: `file_sar`, typology `layering`, 6 key findings (PEP connection, offshore source, shared registered address, rapid fan-out, no source documentation, reversed transaction)
+A hardcoded scenario inspired by the **1MDB sovereign wealth fund scandal**: 5 named entities, 8 transactions totaling $681M, ground truth: `file_sar`, typology `layering`.
 
-The demo runs in two modes:
-1. **Scripted** (`--dry-run`): 15 hardcoded investigation steps, no GPU needed. Produces a perfect +1.01 score for deterministic stage presentations.
-2. **LLM-driven** (`--model checkpoints/best`): The trained agent investigates the 1MDB case autonomously, proving that procedural training transfers to real-world scenarios.
+Two modes:
+1. **Scripted** (`--dry-run`): 15 hardcoded steps, perfect +1.01 score.
+2. **LLM-driven** (`--model checkpoints/best`): Trained agent investigates autonomously.
 
-Both modes capture AGUI state for frontend replay, giving judges a cinematic walkthrough of the agent managing its own operating system while solving a $681M money laundering case. This includes dynamic 3D threat mapping via `react-globe.gl` and smooth incremental entity graph updates to ensure a highly persuasive visual presentation.
+Both modes capture AGUI state for frontend replay.
 
 ---
 
 ## 70B Distributed Training Pipeline (A100 Cluster)
 
-The scaling pivot from 8B/L4 to 70B/multi-A100 is implemented in `train_ppo_70b.py`.
+Implemented in `train_ppo_70b.py` using DeepSpeed ZeRO-3.
 
-### Why DeepSpeed ZeRO-3?
+### VRAM Budget (4× A100-80GB)
 
-| Component | 70B Memory | ZeRO-3 (4× A100-80GB) |
-|-----------|-----------|------------------------|
-| Model weights (4-bit NF4) | ~35 GB | Sharded: ~9 GB/GPU |
+| Component | Total | Per-GPU (sharded) |
+|-----------|-------|-------------------|
+| Model weights (4-bit NF4) | ~35 GB | ~9 GB |
 | LoRA adapters (r=32, α=64) | ~150 MB | Replicated on each GPU |
-| Optimizer states (fp32 AdamW) | ~280 GB | Sharded: ~70 GB/GPU |
-| Gradients (bf16) | ~140 GB | Sharded: ~35 GB/GPU |
+| Optimizer states (fp32 AdamW) | ~280 GB | ~70 GB |
+| Gradients (bf16) | ~140 GB | ~35 GB |
 | **Peak per-GPU** | — | **~50 GB / 80 GB** |
-
-ZeRO-3 shards **all three** (parameters + optimizer + gradients) across GPUs, making 70B feasible on 4× A100-80GB with comfortable headroom.
 
 ### Architectural Decisions
 
-1. **Rank-0 Environment Interaction:** Only rank 0 runs the AML environment. Trajectories (tokenized prompts, responses, rewards) are broadcast to all ranks via `torch.distributed.broadcast_object_list()`. This avoids N redundant environment instances.
-
-2. **`disable_adapter()` Under ZeRO-3:** The KL trick works because LoRA operates at the module level — when ZeRO-3 gathers parameters for a forward pass, disabling adapters simply means the gathered weights skip LoRA additions. No architectural conflict.
-
-3. **DeepSpeed Engine Backward:** Replaces manual `loss.backward()` + `optimizer.step()` with `engine.backward(loss)` + `engine.step()`. DeepSpeed handles gradient accumulation, all-reduce, and gradient clipping internally.
-
-4. **Distributed Checkpointing:** Uses `engine.save_checkpoint()` which saves sharded optimizer states per-rank. Only rank 0 saves the tokenizer.
-
-### Launch Commands
-
-```bash
-# 4-GPU single-node
-deepspeed --num_gpus 4 train_ppo_70b.py --iterations 50 --episodes 2
-
-# 8-GPU multi-node (2 nodes × 4 GPUs)
-deepspeed --num_gpus 4 --num_nodes 2 --hostfile hosts.txt \
-  train_ppo_70b.py --iterations 50 --episodes 2
-
-# With CPU offloading (lower VRAM, slower)
-deepspeed --num_gpus 2 train_ppo_70b.py --offload-optimizer --offload-params
-
-# Dry-run (2 iterations, 1 episode)
-deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
-```
+1. **Rank-0 Environment:** Only rank 0 runs the AML environment. Trajectories broadcast via `torch.distributed.broadcast_object_list()`.
+2. **`disable_adapter()` Under ZeRO-3:** LoRA operates at module level, independent of parameter sharding.
+3. **DeepSpeed Engine:** Handles `backward()`, gradient accumulation, all-reduce, and clipping internally.
+4. **Distributed Checkpointing:** `engine.save_checkpoint()` saves sharded states per-rank. Tokenizer saved by rank 0 only.
 
 ---
 
 ## Dependencies
 
-- **Runtime:** Python 3.10+, FastAPI, Pydantic v2, httpx, openai
-- **Training (optional):** unsloth, trl, peft, torch, wandb
+- **Runtime:** Python 3.10+, FastAPI, Pydantic v2, httpx, openai, openenv-core
+- **Training (optional):** unsloth, trl, peft, torch, bitsandbytes, accelerate, wandb
 - **Validation:** openenv-core, Docker
 
 ---
@@ -306,35 +323,36 @@ deepspeed --num_gpus 4 train_ppo_70b.py --dry-run
 
 ## Recent Changes
 
+### 2026-04-25
+
+1. **Final audit fixes:** P1-1 (orchestrator score propagation), P2-2 (KL direction: `kl.abs()` → `kl.clamp(min=0)` in all 3 trainers), grader `false_positive` typology alias for clean-scenario TN detection.
+2. **Self-play dry-run validated on Colab L4:** Full 3-round orchestrator dry-run completes end-to-end. VRAM peak ~12 GB. Scenario pre-generation: 60/60 valid.
+3. **Documentation rewrite:** Updated README, TRAINING, and PROJECT_CONTEXT to reflect self-play as production training path.
+
 ### 2026-04-24
 
-1. **Documentation rewrite:** Corrected tool count from 15 to 18 (added Phase 3 FinCEN tools), verified terminal reward weights against `grader.py`, unified all docs as single source of truth.
-2. **Adversary Agent:** Replaced GPT-4o-mini dependency with local Llama-3.1-8B model for offline adversarial generation.
-3. **PLR Curriculum Engine:** Added Prioritized Level Replay (`curriculum/plr_engine.py`) with regret-weighted scenario sampling, 5th AGUI panel (`CurriculumPanel.tsx`), and `--use-plr` flag.
-4. **GRPO Trainer:** Added `train_grpo.py` — critic-free Group Relative Policy Optimization with group-relative advantage (G=4).
+1. **Self-play architecture implemented:** `self_play.py` orchestrator, `train_defender_ppo.py` (GAE, mixed scenarios, entity-F1/typology tracking), `train_launderer_ppo.py` (single-step MDP, VRAM-safe scoring), `server/launderer_env.py` (robust JSON extraction, shaped rewards).
+2. **Critical audit fixes:** P0-1 (entity ID regex), P0-2 (detection labels / TN via `decision_action`), P1-2 (`async_poll_count`), P1-3 (terminal reward de-duplication), P1-1 (orchestrator score propagation).
+3. **AMLState extensions:** Added `submitted_typology`, `entities_flagged`, `decision_action`, `async_poll_count` for ground-truth metric persistence.
+4. **Scenario injection:** `AMLEnvironment.reset()` accepts optional `scenario` parameter for mixed-mode training.
+5. **Documentation rewrite:** Corrected tool count from 15 to 18, verified terminal reward weights against `grader.py`.
+6. **PLR Curriculum Engine:** Added `curriculum/plr_engine.py`, 5th AGUI panel (`CurriculumPanel.tsx`), and `--use-plr` flag.
 
 ### 2026-04-23
 
-1. **OpenEnv Server (`openenv_server.py`):** Production-grade FastAPI wrapper using OpenEnv SDK `create_app()` with standalone fallback. Boot-time validation, structured logging, HF Spaces ready (port 7860).
-2. **AMLEnvironment fix:** Added `super().__init__()` to `AMLEnvironment.__init__()` for OpenEnv ABC compatibility.
-3. **Dockerfile rewrite:** HF Spaces compliant — non-root user (UID 1000), port 7860, `HEALTHCHECK`, `openenv_server:app` entrypoint.
-4. **`.hfignore`:** Dedicated exclude file for `openenv push` — excludes `frontend/`, `venv/`, binary files. Reduced upload from 558MB to ~5MB.
-5. **HF Space deployed:** `MuazTPM/aml_investigation_env` live at https://huggingface.co/spaces/MuazTPM/aml_investigation_env
-6. **Frontend Overhaul:** Transitioned AGUI to a 2-column layout (Entity Graph on left, State/Terminal stacked on right). Rebranded Nexus to Memex with a new smoky gray (`#131316`) color palette.
-7. **3D Physics & Visuals:** Integrated `react-globe.gl` for dynamic 3D threat mapping. Optimized Cytoscape `cola` physics with incremental add/remove logic for stable, non-destructive graph animations during replay.
-8. **Adversarial Training Loop:** Added an LLM-backed Adversary Agent (`adversary_agent.py`) and Battle Orchestrator (`train_adversary.py`) to generate evasive AML scenarios. Failed defender attempts are saved to an SQLite database (`adversarial_successes.db`) as negative examples for the DPO pipeline.
-9. **Reward Integrity:** Implemented hard caps to prevent PPO reward farming: maximum 3 rewarded disk writes (+0.10) and 2 rewarded kernel injections (+0.15) per episode. Subsequent calls still incur the standard action penalty.
+1. **OpenEnv Server:** Production-grade FastAPI wrapper using OpenEnv SDK `create_app()`. HF Spaces ready (port 7860).
+2. **HF Space deployed:** `MuazTPM/aml_investigation_env` live.
+3. **Frontend Overhaul:** 2-column AGUI layout, 3D threat mapping via `react-globe.gl`, Cytoscape `cola` physics.
+4. **Reward Integrity:** Hard caps on disk writes (3) and kernel injections (2) per episode.
 
 ### 2026-04-22
 
-1. **PPO stability overhaul (10 fixes):** Fixed catastrophic policy collapse caused by `.sum()` KL divergence. Added entropy bonus, ratio clamping, return clipping, and empty response guards to both `train_ppo.py` and `train_ppo_70b.py`.
-2. **Production hardening:** Both trainers now handle edge cases (zero-token responses, ratio overflow, gradient NaN) that would corrupt weights in long-horizon training runs.
-3. **WandB monitoring:** Added `ppo/entropy` metric for real-time mode collapse detection.
+1. **PPO stability overhaul (10 fixes):** Mean KL, entropy bonus, ratio clamping, return clipping, empty response guards.
+2. **Auto-Revert:** Entropy heartbeat monitor with checkpoint time machine.
 
 ### 2026-04-20
 
-1. **Codebase sanitization:** Removed duplicate type definitions from `app.py`, updated `client.py` with all tools, rewrote README to reflect Memex OS-Agent architecture
-2. **Git consolidation:** Resolved stuck rebase, recovered all OS-mechanic features to `main`
-3. **PPO trainer:** Custom step-level PPO with Unsloth 4-bit + LoRA, L4-optimized (peak ~10GB VRAM)
-4. **70B scaling pivot:** `train_ppo_70b.py` with DeepSpeed ZeRO-3 for multi-node A100 cluster
-5. **Demo system:** 1MDB-inspired scenario with AGUI replay capture for frontend visualization
+1. **Codebase sanitization:** Removed duplicate types, updated `client.py`, rewrote README.
+2. **PPO trainer:** Custom step-level PPO with Unsloth 4-bit + LoRA, L4-optimized.
+3. **70B scaling pivot:** `train_ppo_70b.py` with DeepSpeed ZeRO-3.
+4. **Demo system:** 1MDB-inspired scenario with AGUI replay capture.

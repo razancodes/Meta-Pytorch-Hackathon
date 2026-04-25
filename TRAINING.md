@@ -1,8 +1,9 @@
-# Memex PPO Training Guide
+# Memex Training Guide
 
 > Complete training pipeline for the Memex OS-Agent Benchmark.
-> **PPO is the production training path.** Self-play (Launderer vs Defender) is the primary adversarial loop.
-> GRPO is experimental/ablation only. DPO handles offline refinement from human corrections.
+> **Self-play** (Launderer vs Defender) is the **production training path**.
+> Standalone PPO (`train_ppo.py`) is available for ablation. GRPO is experimental only.
+> DPO handles offline refinement from human corrections.
 
 ---
 
@@ -88,7 +89,7 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 4: Dry-run (2 iterations, 1 episode, no WandB)
+# CELL 4: Dry-run (2 iters, 1 episode, no WandB)
 # ═══════════════════════════════════════════════════════════
 
 # Defender PPO dry-run
@@ -105,29 +106,14 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 5: Full PPO training with PLR (~2 hours on L4)
+# CELL 5: ★ Self-Play training (~6-8 hours on L4)
+# THIS IS THE PRIMARY TRAINING CELL
+# Alternating best-response: Warmup → Launderer → Defender
+# Only one model loaded at a time (VRAM-safe)
 # ═══════════════════════════════════════════════════════════
 
 import wandb
 wandb.login()
-
-!python train_ppo.py \
-    --model unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit \
-    --lr 5e-6 \
-    --lora-r 16 \
-    --episodes 4 \
-    --iterations 50 \
-    --temperature 0.5 \
-    --use-plr \
-    --wandb-project memex-ppo
-```
-
-```python
-# ═══════════════════════════════════════════════════════════
-# CELL 5c: Self-Play training (Launderer vs Defender)
-# Alternating best-response: Warmup → Launderer → Defender
-# Only one model loaded at a time (L4-safe)
-# ═══════════════════════════════════════════════════════════
 
 !python self_play.py \
     --outer-rounds 3 \
@@ -137,11 +123,8 @@ wandb.login()
     --wandb-project memex-selfplay
 
 # Or individual agent training:
-# Defender only (procedural scenarios)
-# !python train_defender_ppo.py --dry-run --scenario-source procedural
-
-# Launderer only
-# !python train_launderer_ppo.py --dry-run
+# !python train_defender_ppo.py --scenario-source procedural --iterations 50
+# !python train_launderer_ppo.py --iterations 50 --defender-checkpoint checkpoints/defender/best
 ```
 
 **Self-Play CLI Reference:**
@@ -162,10 +145,28 @@ wandb.login()
 
 ```python
 # ═══════════════════════════════════════════════════════════
-# CELL 5b: GRPO training (EXPERIMENTAL — ablation only)
+# CELL 5b: Standalone PPO (ALTERNATIVE — no adversarial)
+# Single-agent PPO with PLR curriculum. Use self_play.py
+# for the full two-agent adversarial pipeline instead.
+# ═══════════════════════════════════════════════════════════
+
+!python train_ppo.py \
+    --model unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit \
+    --lr 5e-6 \
+    --lora-r 16 \
+    --episodes 4 \
+    --iterations 50 \
+    --temperature 0.5 \
+    --use-plr \
+    --wandb-project memex-ppo
+```
+
+```python
+# ═══════════════════════════════════════════════════════════
+# CELL 5c: GRPO training (EXPERIMENTAL — ablation only)
 # ⚠️ GRPO lacks importance-ratio clipping, uses |KL| instead
 # of forward KL, and has gradient-magnitude coupling to group
-# size. Use train_ppo.py for production. Requires --experimental.
+# size. Use self_play.py for production. Requires --experimental.
 # ═══════════════════════════════════════════════════════════
 
 !python train_grpo.py --experimental \

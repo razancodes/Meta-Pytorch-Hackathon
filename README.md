@@ -49,12 +49,12 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        FRONTEND (Next.js)                           │
-│  ┌────────────────────────────────┬──────────────────────────────┐  │
-│  │  3D Threat Map & Entity Graph  │  RAM Monitor / Disk Storage  │  │
-│  │  (react-globe.gl + cola)       │  Active Process / Kernel     │  │
-│  │  [60% Width]                   │  Curriculum Metrics (PLR)    │  │
-│  │                                │  [Stacked 40% Width]         │  │
-│  └────────────────────────────────┴──────────────────────────────┘  │
+│  ┌────────────────────────────┬──────────────────────────────────┐  │
+│  │ 3D Threat Map & Entity     │  RAM Monitor / Disk Storage      │  │
+│  │ Graph (react-globe.gl +    │  Active Processes / Kernel       │  │
+│  │ Cytoscape cola physics)    │  Curriculum Metrics (PLR)        │  │
+│  │  [60% Width]               │  [Stacked 40% Width]             │  │
+│  └────────────────────────────┴──────────────────────────────────┘  │
 │                     ← agui_state JSON per step                      │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
@@ -72,26 +72,40 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │                                                                      │
 │  ┌───────────────────────────────────────────────────────────────┐   │
 │  │  Procedural Generator: 3 typologies × 3 difficulties         │   │
-│  │  Adversary Agent: Local Llama-3.1-8B evasive graph generator │   │
+│  │  Launderer Agent: PPO-trained evasive scenario generator     │   │
 │  └───────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
 ┌──────────────────────────────────────────────────────────────────────┐
-│                     TRAINING INFRASTRUCTURE                          │
+│               SELF-PLAY TRAINING (Two-Agent PPO)                     │
 │                                                                      │
-│  ┌────────────────────┐    ┌──────────────────────────────────┐     │
-│  │  train_ppo.py      │    │  train_grpo.py (EXPERIMENTAL)    │     │
-│  │  L4 (24GB VRAM)    │    │  L4 (24GB VRAM)                  │     │
-│  │  8B + 4-bit + LoRA │    │  8B + 4-bit + LoRA               │     │
-│  │  disable_adapter() │    │  No clipping, |KL|, grad coupling│     │
-│  │  --use-plr         │    │  --experimental required          │     │
-│  │  Peak: ~10 GB      │    │  For ablation comparison only     │     │
-│  └────────────────────┘    └──────────────────────────────────┘     │
+│  ┌─────────────────────────────────────────────────────────────┐     │
+│  │  self_play.py — Alternating Best-Response Orchestrator      │     │
+│  │                                                             │     │
+│  │  Phase 1: Defender Warm-Start (procedural scenarios)        │     │
+│  │  ┌── Outer Round 1..N:                                      │     │
+│  │  │  Phase 2: Launderer PPO vs frozen Defender               │     │
+│  │  │  Phase 3: Defender PPO on mixed scenarios                │     │
+│  │  └── (mix ratio: 0.3 → 0.7 linear)                         │     │
+│  └─────────────────────────────────────────────────────────────┘     │
+│                                                                      │
+│  ┌──────────────────────┐    ┌──────────────────────────────┐       │
+│  │ train_defender_ppo.py│    │ train_launderer_ppo.py       │       │
+│  │ Defender-8B + LoRA   │    │ Launderer-8B + LoRA          │       │
+│  │ GAE (γ=0.99, λ=0.95)│ ◄──┤ Single-step MDP              │       │
+│  │ Mixed scenarios      │    │ VRAM-safe model swap          │       │
+│  │ Entity F1 tracking   │    │ Frozen Defender scoring       │       │
+│  └──────────────────────┘    └──────────────────────────────┘       │
+│                                                                      │
+│  ┌──────────────────────┐    ┌──────────────────────────────┐       │
+│  │ train_ppo.py         │    │ train_grpo.py (EXPERIMENTAL) │       │
+│  │ Standalone PPO + PLR │    │ No clipping, |KL|            │       │
+│  │ L4 (24GB) / T4 (15GB)│    │ Ablation only                │       │
+│  └──────────────────────┘    └──────────────────────────────┘       │
 │                                                                      │
 │  PLR Curriculum: regret-weighted scenario replay (curriculum/)      │
-│  Step-Level PPO: every tool call gets a reward signal             │
-│  KL via LoRA toggle: no second model copy needed                    │
 │  Auto-Revert: entropy heartbeat + checkpoint time machine           │
+│  VRAM-safe: only one model loaded at a time (full unload/reload)    │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -134,23 +148,33 @@ export HF_TOKEN="sk-..."
 python inference.py
 ```
 
-### Train (L4 / Colab Pro)
+### Train — Self-Play (L4 / Colab Pro)
+
+The **production training path** is two-agent self-play: a Defender learns to investigate AML cases while a Launderer learns to generate evasive scenarios.
 
 ```bash
 pip install unsloth trl peft accelerate bitsandbytes wandb
 
-# Dry-run (2 iterations, no GPU needed for env)
-python train_ppo.py --dry-run
+# Dry-run (2 iterations per phase, no WandB)
+python self_play.py --dry-run
 
-# PPO with PLR curriculum (~2.5 hours on L4)
+# Full self-play (~6-8 hours on L4)
+python self_play.py \
+    --outer-rounds 3 \
+    --defender-warmup 20 \
+    --launderer-iters 10 \
+    --defender-iters 15 \
+    --wandb-project memex-selfplay
+```
+
+Or train individual agents:
+
+```bash
+# Defender only (procedural scenarios)
+python train_defender_ppo.py --scenario-source procedural --iterations 50
+
+# Standalone PPO with PLR curriculum (~2.5 hours)
 python train_ppo.py --iterations 50 --episodes 4 --use-plr
-
-# GRPO — EXPERIMENTAL (ablation comparison only, requires --experimental)
-python train_grpo.py --experimental --iterations 150 --group-size 4 --use-plr
-
-# LoRA rank ablation
-python train_ppo.py --lora-r 32 --use-plr --iterations 50
-python train_ppo.py --lora-r 64 --use-plr --iterations 50
 ```
 
 ### Train (70B / A100 Cluster — Proof of Scalability)
@@ -162,9 +186,6 @@ pip install deepspeed unsloth trl peft wandb
 deepspeed --num_gpus 4 train_ppo_70b.py \
   --model meta-llama/Meta-Llama-3.1-70B-Instruct \
   --iterations 50 --episodes 2
-
-# With CPU offloading (2× A100)
-deepspeed --num_gpus 2 train_ppo_70b.py --offload-optimizer --offload-params
 ```
 
 ### Run the 1MDB Demo
@@ -226,9 +247,36 @@ python demo_eval.py --model checkpoints/best
 
 ---
 
+## Self-Play: Launderer vs Defender
+
+The **primary adversarial training approach** is two-agent PPO self-play, where a Launderer-8B generates evasive AML scenarios and a Defender-8B learns to investigate them.
+
+```
+┌─────────────────────────┐                   ┌─────────────────────────┐
+│    LAUNDERER AGENT       │                   │     DEFENDER AGENT      │
+│ (train_launderer_ppo.py) │    scenario       │ (train_defender_ppo.py) │
+│                          │ ───────────────►  │                         │
+│  Single-step MDP:        │                   │  Multi-step MDP:        │
+│   Generate evasive JSON  │  -defender_score  │   18 investigation      │
+│   (valid schema + GT)    │ ◄───────────────  │   tools, 25 steps max   │
+│                          │   = launderer     │                         │
+│  LoRA on Llama-3.1-8B    │     reward        │  LoRA on Llama-3.1-8B   │
+└──────────────────────────┘                   └─────────────────────────┘
+```
+
+**Schedule** (`self_play.py`):
+1. **Phase 1 — Defender Warm-Start:** Train Defender on procedural scenarios (20 iters)
+2. **Phase 2 — Launderer PPO:** Train Launderer to fool frozen Defender (10 iters/round)
+3. **Phase 3 — Defender Mixed:** Train Defender on procedural + Launderer scenarios (15 iters/round)
+4. Repeat Phases 2–3 for N outer rounds (mix ratio: 0.3 → 0.7 linear)
+
+**VRAM-safe:** Only one model loaded at a time. Full unload/reload cycle for Defender scoring during Launderer training. Peak VRAM: ~12 GB on L4.
+
+---
+
 ## The Gym vs. The Stage
 
-**Training (The Gym):** `procedural_generator.py` creates infinite, unique POMDP scenarios. Entity IDs are randomized per episode — no memorization possible. The agent must learn transferable OS mechanics.
+**Training (The Gym):** `procedural_generator.py` creates infinite, unique POMDP scenarios. Entity IDs are randomized per episode — no memorization possible. The Launderer learns to generate adversarial scenarios; the Defender learns transferable OS mechanics.
 
 **Presentation (The Stage):** `demo_eval.py` runs a hardcoded scenario inspired by the **1MDB scandal** — $681M in layered wire transfers through shell companies. Judges see the agent managing RAM, firing async traces, and injecting compliance rules while solving a real-world financial crime.
 
@@ -239,33 +287,44 @@ python demo_eval.py --model checkpoints/best
 ```
 .
 ├── openenv_server.py            # ★ OpenEnv FastAPI entrypoint (create_app + fallback)
-├── models.py                    # Pydantic types (single source of truth)
-├── state_manager.py             # OS mechanics engine
+├── models.py                    # Pydantic types (AMLState, AMLAction, AMLObservation, AGUIState)
+├── state_manager.py             # OS mechanics engine (RAM, Disk, Async Queue, Kernel)
 ├── client.py                    # HTTP client (18 tool wrappers)
 ├── inference.py                 # ReAct agent (OS-aware)
-├── train_ppo.py                 # PPO trainer (L4, 8B) + PLR curriculum
-├── train_grpo.py                # GRPO trainer (L4, 8B) — no critic, group-relative
-├── train_ppo_70b.py             # PPO trainer (A100 cluster, 70B — proof of scalability)
-├── train_dpo.py                 # DPO continuous learning (offline)
-├── train_adversary.py           # GAN-style adversarial battle loop (SQLite)
+│
+├── self_play.py                 # ★ Two-agent self-play orchestrator (Warmup → L → D × N)
+├── train_defender_ppo.py        # Defender PPO: GAE, mixed scenarios, entity-F1/typology tracking
+├── train_launderer_ppo.py       # Launderer PPO: single-step MDP, VRAM-safe Defender scoring
+├── train_ppo.py                 # Standalone step-level PPO (L4, 8B, --use-plr)
+├── train_grpo.py                # GRPO (EXPERIMENTAL — ablation only, --experimental)
+├── train_ppo_70b.py             # Multi-GPU PPO (DeepSpeed ZeRO-3, A100, 70B)
+├── train_dpo.py                 # DPO continuous learning (offline, from user corrections)
+├── train_adversary.py           # Heuristic adversarial loop (DEPRECATED — use self_play.py)
 ├── hotswap.py                   # Zero-downtime LoRA adapter swap
-├── demo_eval.py                 # 1MDB demo + AGUI replay
+├── demo_eval.py                 # 1MDB demo + AGUI replay capture
+├── eval_harness.py              # Evaluation harness for checkpoint benchmarking
+│
 ├── Dockerfile                   # HF Spaces deployment (port 7860)
 ├── openenv.yaml                 # OpenEnv contract → openenv_server:app
+├── requirements.txt             # Runtime deps (fastapi, pydantic, httpx, openai, openenv-core)
 ├── .hfignore                    # Exclude patterns for openenv push
+├── validate-submission.sh       # OpenEnv submission validator
+├── validate.sh                  # Local validation script
+│
 ├── curriculum/
 │   ├── plr_engine.py            # ★ Prioritized Level Replay engine
 │   └── oracle.py                # Proxy regret (1.0 - score)
 ├── scenarios/
-│   ├── procedural_generator.py  # POMDP graph builder
+│   ├── procedural_generator.py  # POMDP graph builder (3 typologies × 3 difficulties)
 │   ├── adversary_agent.py       # Local Llama-3.1-8B evasive scenario generator
-│   ├── compliance_manual.py     # Searchable rule corpus
+│   ├── compliance_manual.py     # Searchable AML rule corpus
 │   └── base.py                  # Scenario ABC
 ├── graders/
-│   └── grader.py                # Dense reward engine
+│   └── grader.py                # Dense reward engine (per-step + terminal composite)
 ├── server/
-│   ├── app.py                   # Legacy FastAPI (used by trainers)
-│   └── aml_environment.py       # Core env (18 tools + OS mechanics)
+│   ├── aml_environment.py       # Core env (18 tools + OS mechanics + scenario injection)
+│   ├── launderer_env.py         # One-step MDP for Launderer (JSON validation + scoring)
+│   └── app.py                   # Legacy FastAPI server (used by trainers)
 ├── frontend/
 │   ├── components/case/
 │   │   ├── CaseTerminal.tsx     # Main investigation terminal
@@ -289,7 +348,6 @@ docker run -p 7860:7860 memex
 
 # HF Spaces (one command)
 openenv push --ignore-file .hfignore
-# (.hfignore excludes frontend/, venv/ etc. Reduces upload from 558MB to ~5MB)
 # → https://huggingface.co/spaces/MuazTPM/aml_investigation_env
 
 # OpenEnv CLI
@@ -301,7 +359,7 @@ openenv serve
 ## Further Reading
 
 - [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — Full architecture, AGUI data contract, VRAM calculations, 70B scaling analysis
-- [TRAINING.md](TRAINING.md) — Copy-paste Colab/Kaggle cells, stability engineering features, DPO pipeline setup
+- [TRAINING.md](TRAINING.md) — Copy-paste Colab cells, PPO stability engineering, self-play CLI reference, DPO pipeline
 
 ---
 
