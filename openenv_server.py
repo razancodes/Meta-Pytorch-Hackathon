@@ -298,6 +298,7 @@ if not _openenv_available:
 _static_frontend_dir = os.path.join(_PROJECT_ROOT, "static_frontend")
 if os.path.isdir(_static_frontend_dir):
     from starlette.staticfiles import StaticFiles as _StaticFiles
+    from starlette.responses import RedirectResponse as _RedirectResponse
 
     app.mount(
         "/web",
@@ -305,6 +306,15 @@ if os.path.isdir(_static_frontend_dir):
         name="frontend",
     )
     logger.info("Mounted static frontend at /web from %s", _static_frontend_dir)
+
+    # Root redirect: HF Spaces always hits "/" first.
+    # OpenEnv SDK's create_app() has no root route, so "/" returns 404.
+    # This adds a redirect from "/" → "/web/" in BOTH SDK and standalone modes.
+    @app.get("/", include_in_schema=False)
+    async def _root_redirect():
+        return _RedirectResponse(url="/web/")
+
+    logger.info("Added root / → /web/ redirect")
 else:
     logger.info(
         "No static_frontend/ directory found at %s — /web route disabled",
