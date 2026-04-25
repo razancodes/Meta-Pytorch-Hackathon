@@ -281,6 +281,10 @@ class MemexPPO:
             self.optimizer, T_max=config.total_iterations, eta_min=config.lr * 0.1,
         )
 
+        # Running reward baseline (EMA of episode returns)
+        self._return_ema = 0.0
+        self._return_ema_alpha = 0.1
+
 
     # ── Log Probability ──────────────────────────────────────────────
 
@@ -430,24 +434,31 @@ class MemexPPO:
         return steps, stats
 
     def _compute_advantages(self, steps: List[StepData]) -> None:
-        """Compute discounted returns and normalized advantages."""
+        """Compute discounted returns with EMA baseline.
+
+        Uses EMA of recent episode returns as a constant V(s) approximation
+        for variance reduction (Fix 8). Stores RAW advantages — batch-wide
+        normalization is applied in the training loop (Fix 7).
+        """
         T = len(steps)
+        if T == 0:
+            return
+        gamma = self.cfg.gamma
+        clip = self.cfg.reward_clip
+
+        # Compute discounted returns
         returns = [0.0] * T
         G = 0.0
         for t in reversed(range(T)):
-            G = steps[t].reward + self.cfg.gamma * G
+            G = steps[t].reward + gamma * G
             returns[t] = G
 
-        # Clip returns to prevent outlier gradient signals
-        clip = self.cfg.reward_clip
+        # Clip returns
         returns = [max(-clip, min(clip, r)) for r in returns]
 
-        # Per-episode normalization: no cross-difficulty contamination
-        mean_return = sum(returns) / T
-        advs = [r - mean_return for r in returns]
-        std = max((sum(a**2 for a in advs) / T) ** 0.5, 1e-8)
+        # Subtract EMA baseline for variance reduction (Fix 8)
         for t in range(T):
-            steps[t].advantage = advs[t] / std
+            steps[t].advantage = returns[t] - self._return_ema
 
     # ── PPO Update ───────────────────────────────────────────────────
 
@@ -737,6 +748,13 @@ def train(cfg: PPOConfig) -> None:
             print(f"  ⚠ No steps collected, skipping iteration {it}")
             continue
 
+        # ── Batch-wide advantage normalization (Fix 7) ──
+        all_advs = [s.advantage for s in all_steps]
+        mean_adv = sum(all_advs) / len(all_advs)
+        std_adv = max((sum((a - mean_adv) ** 2 for a in all_advs) / len(all_advs)) ** 0.5, 1e-8)
+        for s in all_steps:
+            s.advantage = (s.advantage - mean_adv) / std_adv
+
         # ── PPO Update ──
         ppo_stats = ppo.ppo_update(all_steps)
 
@@ -747,6 +765,12 @@ def train(cfg: PPOConfig) -> None:
         total_sp = sum(s.successful_pages for s in ep_stats)
         total_mi = sum(s.meta_injections for s in ep_stats)
         elapsed = time.time() - t0
+
+        # Update EMA reward baseline (Fix 8)
+        ppo._return_ema = (
+            (1 - ppo._return_ema_alpha) * ppo._return_ema
+            + ppo._return_ema_alpha * mean_score
+        )
         entropy = ppo_stats["ppo/entropy"]
         kl = ppo_stats["ppo/kl"]
 

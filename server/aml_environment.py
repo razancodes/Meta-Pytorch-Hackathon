@@ -4,14 +4,18 @@ Memex OS-Agent Benchmark — Core Environment.
 Integrates the StateManager (OS mechanics) with the AML scenario data and tool
 dispatch. Implements the OpenEnv contract: reset() / step() / state property.
 
-Tool Roster (15 tools):
-  Legacy domain tools (9):
+Tool Roster (18 tools):
+  Domain Investigation Tools (10):
     review_alert, get_customer_profile, query_transactions, check_watchlist,
-    trace_network, check_source_of_funds, assess_risk, file_sar, close_alert
+    trace_network, check_source_of_funds, check_market_price, assess_risk,
+    file_sar, close_alert
 
-  OS-Mechanic tools (6):
+  Phase 3 — FinCEN Investigation Tools (3):
+    check_device_overlap, verify_customs_invoice, query_beneficial_ownership
+
+  OS-Mechanic Tools (5):
     write_to_case_file, request_wire_trace, retrieve_async_result,
-    search_compliance_manual, update_system_prompt, check_market_price
+    search_compliance_manual, update_system_prompt
 """
 
 from __future__ import annotations
@@ -302,6 +306,14 @@ class AMLEnvironment(Environment):
                 is_successful_page=is_successful_page,
                 is_meta_injection=is_meta_injection,
             )
+
+            # Investigation progress bonus (first use of each tool TYPE).
+            # Makes positive reward discoverable through random exploration.
+            from graders.grader import INVESTIGATION_BONUSES
+            if tool in INVESTIGATION_BONUSES and tool not in self._state.investigation_tools_used:
+                step_reward += INVESTIGATION_BONUSES[tool]
+                self._state.investigation_tools_used.append(tool)
+
             self._state.accumulated_reward += step_reward
 
             # Record hash

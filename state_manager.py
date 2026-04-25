@@ -42,7 +42,11 @@ BASE_DIRECTIVE: str = "You are an AML compliance investigator. Gather evidence, 
 # CUST + 3-6 alphanum (e.g. CUSTX3RU), ENT_ + letter + digits (e.g. ENT_Z78),
 # TXN-<tag>-<digits> (e.g. TXN-L-3734), REQ-digits, ACC-digits, ALERT-YYYY-NNNN
 _ENTITY_RE = re.compile(
-    r"\b(?:CUST[A-Z0-9]{3,6}|ENT_[A-Z][A-Z0-9]{1,4}|TXN(?:-[A-Z]{1,3})?-\d{3,5}|REQ-\d{3}|ACC-\d+|ALERT-\d{4}-\d{4})\b"
+    r"\b(?:"
+    r"CUST[A-Z0-9]{3,6}|ENT_[A-Z][A-Z0-9]{1,4}|"
+    r"TXN(?:-[A-Z]{1,3})?-\d{3,5}|REQ-\d{3}|ACC-\d+|ALERT-\d{4}-\d{4}"
+    r"|C-[A-Z0-9]{3,12}|T-\d{3,6}|ALT-[A-Z0-9]{3,6}"  # Launderer patterns
+    r")\b"
 )
 
 

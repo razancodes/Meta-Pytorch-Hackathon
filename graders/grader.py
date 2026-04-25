@@ -90,6 +90,21 @@ SUCCESSFUL_PAGE:        float = +0.10   # Good write_to_case_file
 META_INJECTION:         float = +0.15   # Successful kernel update
 UNIQUE_TOOL_BONUS:      float = +0.03   # Novel, useful tool call
 
+# Investigation progress bonuses — first use of each tool TYPE only.
+# These make positive reward discoverable through random exploration.
+# Small enough (~0.19 total cap) not to dominate terminal reward (~±1.0).
+INVESTIGATION_BONUSES: Dict[str, float] = {
+    "review_alert": 0.03,
+    "get_customer_profile": 0.02,
+    "query_transactions": 0.02,
+    "check_watchlist": 0.02,
+    "trace_network": 0.02,
+    "check_source_of_funds": 0.02,
+    "write_to_case_file": 0.03,
+    "file_sar": 0.05,
+    "close_alert": 0.05,
+}
+
 # OS component sub-weights (per-event)
 OS_PAGE_FAULT_COST:         float = -0.05   # Per page fault
 OS_CASE_WRITE_BONUS:        float = +0.02   # Per successful write_to_case_file on critical entity

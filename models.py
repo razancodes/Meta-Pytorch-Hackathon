@@ -353,6 +353,10 @@ class AMLState(BaseModel):
 
     # Redundancy detection
     tool_call_hashes: List[str] = Field(default_factory=list)
+    investigation_tools_used: List[str] = Field(
+        default_factory=list,
+        description="Tool TYPES already awarded investigation progress bonus (first-use tracking)",
+    )
 
     # --- OS Mechanic: Virtual Memory ---
     ram_observations: List[str] = Field(

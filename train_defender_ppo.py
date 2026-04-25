@@ -276,6 +276,10 @@ class DefenderPPO:
             self.optimizer, T_max=config.total_iterations, eta_min=config.lr * 0.1,
         )
 
+        # Running reward baseline (EMA of episode returns)
+        self._return_ema = 0.0
+        self._return_ema_alpha = 0.1
+
     # ── Log Probability ──────────────────────────────────────────────
 
     def _compute_log_prob(
@@ -481,30 +485,41 @@ class DefenderPPO:
         When λ=1.0, GAE reduces to Monte Carlo returns.
         When λ=0.0, GAE reduces to one-step TD.
         Default λ=0.95 balances both.
+
+        Uses an EMA reward baseline as a constant-V(s) approximation for
+        variance reduction (Fix 8). Stores RAW advantages — batch-wide
+        normalization is applied in the training loop (Fix 7).
         """
         T = len(steps)
+        if T == 0:
+            return
         gamma = self.cfg.gamma
         lam = self.cfg.gae_lambda
         clip = self.cfg.reward_clip
 
-        # Compute TD residuals: δ_t = r_t + γ*V(s_{t+1}) - V(s_t)
-        # Since we don't have a value function, approximate V(s) ≈ 0
-        # This gives δ_t = r_t (clipped)
         rewards = [max(-clip, min(clip, s.reward)) for s in steps]
 
-        # GAE: A_t = Σ_{l=0}^{T-t-1} (γλ)^l * δ_{t+l}
+        # GAE with constant baseline V(s) ≈ EMA of recent returns.
+        # δ_t = r_t + γ*V(s_{t+1}) - V(s_t)
+        # For non-terminal steps with constant V = EMA:
+        #   δ_t = r_t + γ*EMA - EMA = r_t - EMA*(1-γ)
+        # For terminal step (V(s_terminal) = 0):
+        #   δ_T = r_T - EMA
+        baseline_delta = self._return_ema * (1.0 - gamma)
         advantages = [0.0] * T
         gae = 0.0
         for t in reversed(range(T)):
-            delta = rewards[t]  # δ_t = r_t (no value baseline)
+            if t == T - 1:
+                delta = rewards[t] - self._return_ema   # terminal
+            else:
+                delta = rewards[t] - baseline_delta      # non-terminal
             gae = delta + gamma * lam * gae
             advantages[t] = gae
 
-        # Normalize per episode
-        mean_adv = sum(advantages) / max(T, 1)
-        std_adv = max((sum((a - mean_adv) ** 2 for a in advantages) / max(T, 1)) ** 0.5, 1e-8)
+        # Store RAW advantages — no per-episode normalization.
+        # Batch-wide normalization is applied in the training loop.
         for t in range(T):
-            steps[t].advantage = (advantages[t] - mean_adv) / std_adv
+            steps[t].advantage = advantages[t]
 
     # ── PPO Update ───────────────────────────────────────────────────
 
@@ -871,6 +886,15 @@ def train(cfg: DefenderPPOConfig) -> None:
         if not all_steps:
             continue
 
+        # ── Batch-wide advantage normalization (Fix 7) ──
+        # Preserves inter-episode ranking: good episodes get positive
+        # advantages overall, bad episodes get negative.
+        all_advs = [s.advantage for s in all_steps]
+        mean_adv = sum(all_advs) / len(all_advs)
+        std_adv = max((sum((a - mean_adv) ** 2 for a in all_advs) / len(all_advs)) ** 0.5, 1e-8)
+        for s in all_steps:
+            s.advantage = (s.advantage - mean_adv) / std_adv
+
         # PPO Update
         ppo_stats = ppo.ppo_update(all_steps)
 
@@ -880,6 +904,12 @@ def train(cfg: DefenderPPOConfig) -> None:
         typo_acc = sum(1 for s in ep_stats if s.typology_correct) / len(ep_stats)
         mean_f1 = sum(s.entity_f1 for s in ep_stats) / len(ep_stats)
         elapsed = time.time() - t0
+
+        # Update EMA reward baseline (Fix 8)
+        ppo._return_ema = (
+            (1 - ppo._return_ema_alpha) * ppo._return_ema
+            + ppo._return_ema_alpha * mean_score
+        )
 
         print(
             f"\n  ═══ Iter {it}/{iters} ═══\n"
