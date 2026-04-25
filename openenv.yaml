@@ -6,7 +6,7 @@ app: openenv_server:app
 port: 7860
 
 models:
-  - name: "Qwen/Qwen2.5-72B-Instruct"
+  - name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
 tasks:
   - id: "easy"

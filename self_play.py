@@ -44,15 +44,15 @@ class SelfPlayConfig:
 
     # Model (shared base for both agents)
     base_model: str = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
-    max_seq_length: int = 2048
+    max_seq_length: int = 4096    # A100: 4096 (L4: use 2048)
 
     # Self-play schedule
     outer_rounds: int = 3       # number of alternating rounds
     defender_warmup_iters: int = 20   # Phase 1 only
     defender_iters: int = 15          # Phases 3+
     launderer_iters: int = 10         # Phases 2+
-    defender_episodes_per_iter: int = 4
-    launderer_episodes_per_iter: int = 4
+    defender_episodes_per_iter: int = 8   # A100: 8 (L4: use 4)
+    launderer_episodes_per_iter: int = 8  # A100: 8 (L4: use 4)
 
     # Mixing ratio for Phase 3+ (fraction of Launderer scenarios)
     mix_ratio_start: float = 0.3   # Phase 3
