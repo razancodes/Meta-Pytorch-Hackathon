@@ -82,24 +82,24 @@ class GRPOTrainConfig:
 
     # GRPO
     num_generations: int = 4        # G — group size per prompt
-    max_completion_length: int = 2048
-    num_train_epochs: int = 1
+    max_completion_length: int = 1024
+    num_train_epochs: int = 3
     per_device_train_batch_size: int = 1
-    gradient_accumulation_steps: int = 4
-    learning_rate: float = 5e-6
-    beta: float = 0.04              # KL penalty
+    gradient_accumulation_steps: int = 8
+    learning_rate: float = 2e-5
+    beta: float = 0.01              # KL penalty (reduced from 0.04 — clip_ratio=0 in v1)
     loss_type: str = "grpo"         # "grpo", "dapo", "dr_grpo"
     scale_rewards: bool = True
 
     # Dataset
-    num_prompts: int = 100          # Number of unique scenario prompts
+    num_prompts: int = 500          # Number of unique scenario prompts
     difficulties: list = field(default_factory=lambda: ["easy", "medium", "hard"])
 
     # Infrastructure
     output_dir: str = "checkpoints/defender-grpo"
     wandb_project: str = "memex-grpo"
     logging_steps: int = 1
-    save_steps: int = 25
+    save_steps: int = 50
     dry_run: bool = False
 
     # Environment
@@ -306,10 +306,10 @@ def reward_format_compliance(completions, **kwargs) -> List[float]:
     non-JSON output from getting any positive reward.
 
     Scoring:
-        +0.2   Valid JSON with "tool" key pointing to a known tool
-        +0.1   Valid JSON with "tool" key but unknown tool name
-        -0.5   No valid JSON tool call found (gibberish/off-format)
-        -1.0   Empty or degenerate output (< 5 chars or >80% repeated tokens)
+        +1.0   Valid JSON with "tool" key pointing to a known tool
+        +0.3   Valid JSON with "tool" key but unknown tool name
+        -1.0   No valid JSON tool call found (gibberish/off-format)
+        -2.0   Empty or degenerate output (< 5 chars or >80% repeated tokens)
     """
     rewards = []
     for completion in completions:
@@ -317,7 +317,7 @@ def reward_format_compliance(completions, **kwargs) -> List[float]:
 
         # Check for degenerate output
         if not text or len(text.strip()) < 5:
-            rewards.append(-1.0)
+            rewards.append(-2.0)
             continue
 
         # Detect degenerate repetition (> 80% of tokens are the same)
@@ -326,22 +326,22 @@ def reward_format_compliance(completions, **kwargs) -> List[float]:
             from collections import Counter
             most_common_count = Counter(tokens).most_common(1)[0][1]
             if most_common_count / len(tokens) > 0.8:
-                rewards.append(-1.0)
+                rewards.append(-2.0)
                 continue
 
         # Parse tool call
         tool_call = parse_tool_call(text)
         if tool_call is None:
-            rewards.append(-0.5)
+            rewards.append(-1.0)
             continue
 
         tool = tool_call.get("tool", "").strip().lower()
         if tool in _VALID_TOOLS:
-            rewards.append(0.2)
+            rewards.append(1.0)
         elif tool:
-            rewards.append(0.1)  # Valid JSON, unknown tool
+            rewards.append(0.3)  # Valid JSON, unknown tool
         else:
-            rewards.append(-0.5)
+            rewards.append(-1.0)
 
     return rewards
 
@@ -391,7 +391,7 @@ def reward_investigation_quality(completions, **kwargs) -> List[float]:
         elif tool in _OS_TOOLS:
             rewards.append(0.2)
         elif tool in {"file_sar", "close_alert"}:
-            rewards.append(0.1)
+            rewards.append(0.5)
         else:
             rewards.append(0.0)
 
@@ -632,7 +632,7 @@ def train(cfg: GRPOTrainConfig) -> None:
         bf16=(compute_dtype == torch.bfloat16),
         fp16=(compute_dtype == torch.float16),
         max_grad_norm=1.0,
-        warmup_steps=10,
+        warmup_steps=20,
         lr_scheduler_type="cosine",
         seed=42,
         # Log completions for debugging
