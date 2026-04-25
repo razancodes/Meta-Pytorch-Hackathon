@@ -524,11 +524,17 @@ def train(cfg: GRPOTrainConfig) -> None:
     print("▸ Loading model with Unsloth (4-bit quantization)...")
     from unsloth import FastLanguageModel
 
+    import torch
+
+    # Explicitly set dtype to bfloat16 to match GRPOConfig(bf16=True).
+    # Using dtype=None (auto-detect) can pick float16 on some GPUs,
+    # which causes "self and mat2 must have the same dtype, but got
+    # Half and BFloat16" in Unsloth's LoRA matmul kernels.
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg.model_name,
         max_seq_length=cfg.max_seq_length,
         load_in_4bit=cfg.load_in_4bit,
-        dtype=None,  # Auto-detect
+        dtype=torch.bfloat16,
     )
 
     print("▸ Applying LoRA adapters...")
@@ -598,7 +604,7 @@ def train(cfg: GRPOTrainConfig) -> None:
         report_to=report_to,
         bf16=True,
         max_grad_norm=1.0,
-        warmup_ratio=0.05,
+        warmup_steps=10,
         lr_scheduler_type="cosine",
         seed=42,
         # Log completions for debugging
