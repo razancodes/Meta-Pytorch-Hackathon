@@ -31,8 +31,19 @@ import random
 import re
 import sys
 import time
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+# ---------------------------------------------------------------------------
+# Suppress known warnings from transformers/Unsloth internals.
+# These are library-internal deprecations — not our code, not fixable by us.
+# ---------------------------------------------------------------------------
+warnings.filterwarnings("ignore", message=".*attention mask API.*AttentionMaskConverter.*")
+warnings.filterwarnings("ignore", message=".*warmup_ratio is deprecated.*")
+warnings.filterwarnings("ignore", message=".*use_return_dict.*is deprecated.*")
+warnings.filterwarnings("ignore", message=".*Passing.*generation_config.*together with.*")
+warnings.filterwarnings("ignore", message=".*Both.*max_new_tokens.*and.*max_length.*")
 
 # ---------------------------------------------------------------------------
 # Path bootstrap
@@ -531,13 +542,15 @@ def train(cfg: GRPOTrainConfig) -> None:
 
     import torch
 
-    # Use bfloat16 for A100/L40S (native support). On T4/L4, Unsloth
-    # will auto-select float16 if bfloat16 is not supported.
-    compute_dtype = (
-        torch.bfloat16
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-        else torch.float16
-    )
+    # IMPORTANT: Unsloth's 4-bit quantization (load_in_4bit=True) internally
+    # uses float16 as the BNB compute dtype, regardless of what we pass here.
+    # When we try to use bfloat16, the LoRA adapters are created in bf16 but
+    # the dequantized base weights remain fp16, causing:
+    #   RuntimeError: self and mat2 must have the same dtype (Half vs BFloat16)
+    # inside unsloth/kernels/fast_lora.py → matmul_lora.
+    #
+    # Fix: Always use float16 with Unsloth 4-bit. A100 handles fp16 natively.
+    compute_dtype = torch.float16
     print(f"  Compute dtype: {compute_dtype}")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
