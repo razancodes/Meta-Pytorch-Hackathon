@@ -64,7 +64,7 @@ The Defender agent is trained using [GRPO (Group Relative Policy Optimization)](
 ### Training on Colab / HF
 
 **Target:** Colab Pro L4 (24 GB VRAM) or HF Jobs (L4/T4)
-**Model:** `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit`
+**Model:** `unsloth/Meta-Llama-3.1-8B-Instruct`
 **Peak VRAM:** ~12-14 GB (4-bit + LoRA + G=4 generation)
 
 ### Colab Setup (Copy-Paste Cells)
@@ -144,7 +144,7 @@ import wandb
 wandb.login()
 
 !python train_grpo.py \
-    --model unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit \
+    --model unsloth/Meta-Llama-3.1-8B-Instruct \
     --num-prompts 100 \
     --num-generations 4 \
     --lr 5e-6 \
@@ -228,7 +228,7 @@ print("✅ Model pushed to HuggingFace Hub!")
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit` | Base model |
+| `--model` | `unsloth/Meta-Llama-3.1-8B-Instruct` | Base model |
 | `--num-prompts` | `100` | Unique scenario prompts |
 | `--num-generations` | `4` | G — group size for GRPO |
 | `--lr` | `5e-6` | Learning rate |
@@ -431,7 +431,7 @@ npx prisma migrate dev --name init
    ```
 3. **Hot-swap adapters** into running inference server:
    ```bash
-   python hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit --adapter checkpoints/dpo-latest
+   python hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct --adapter checkpoints/dpo-latest
    ```
 
 ### DPO Hyperparameters

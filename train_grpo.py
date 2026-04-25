@@ -18,7 +18,7 @@ Usage:
     python train_grpo.py --dry-run
 
     # Custom settings
-    python train_grpo.py --model unsloth/Qwen2.5-7B-Instruct-bnb-4bit \\
+    python train_grpo.py --model unsloth/Meta-Llama-3.1-8B-Instruct \\
         --num-prompts 200 --num-generations 4 --lr 5e-6
 """
 
@@ -371,6 +371,8 @@ def reward_investigation_quality(completions, **kwargs) -> List[float]:
 
         tool = tool_call.get("tool", "").strip().lower()
         params = tool_call.get("parameters", {})
+        if not isinstance(params, dict):
+            params = {}
 
         # Check for dummy/empty parameters on tools that require them
         tools_needing_params = {
@@ -423,7 +425,7 @@ def reward_environment_execution(completions, **kwargs) -> List[float]:
 
         tool = tool_call.get("tool", "").strip().lower()
         params = tool_call.get("parameters", {})
-        if isinstance(params, str):
+        if not isinstance(params, dict):
             params = {}
 
         try:
@@ -479,6 +481,8 @@ def reward_os_mechanics(completions, **kwargs) -> List[float]:
 
         tool = tool_call.get("tool", "").strip().lower()
         params = tool_call.get("parameters", {})
+        if not isinstance(params, dict):
+            params = {}
 
         if tool == "write_to_case_file":
             content = params.get("content", params.get("note", ""))
