@@ -36,6 +36,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from server.launderer_env import LaundererEnv, LaundererObs
+from models import AMLObservation
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -294,7 +295,7 @@ class LaundererPPO:
                     policy_loss = -torch.min(surr1, surr2)
 
                     kl = new_lp - step.ref_log_prob
-                    kl_loss = self.cfg.kl_coef * kl.abs()
+                    kl_loss = self.cfg.kl_coef * kl.clamp(min=0)
 
                     loss = (policy_loss + kl_loss - self.cfg.entropy_coef * entropy) / self.cfg.grad_accum_steps
                     loss.backward()
@@ -369,7 +370,7 @@ def train(cfg: LaundererPPOConfig) -> None:
   LoRA:   r={cfg.lora_r}  α={cfg.lora_alpha}
   LR:     {cfg.lr}  |  Clip: {cfg.clip_eps}  |  KL: {cfg.kl_coef}
   Iters:  {cfg.total_iterations}  ×  {cfg.episodes_per_iter} ep/iter
-  Defender: {cfg.defender_checkpoint or 'NONE (dry-run)'}
+  Defender: {cfg.defender_checkpoint or 'NONE (dummy scoring)'}
   Dry:    {cfg.dry_run}
 {'═'*60}"""
     print(banner)
@@ -409,26 +410,56 @@ def train(cfg: LaundererPPOConfig) -> None:
         print("[3/4] WandB SKIPPED (dry-run)")
 
     # ── 4. Setup Environment ──
+    # VRAM-SAFE MODEL SWAPPING STRATEGY: Full unload/reload.
+    #
+    # Why: On a 22 GB L4, we cannot have both agents loaded simultaneously.
+    # LoRA adapter swapping was considered but rejected because:
+    #   (a) Both agents need different LoRA adapters on the same base model.
+    #   (b) PEFT adapter swapping can leak gradient state between agents.
+    #   (c) Full unload/reload is simpler and guarantees zero shared state.
+    #
+    # How it works per iteration:
+    #   1. Launderer generates batch of scenarios (model loaded)
+    #   2. Save Launderer LoRA weights to temp checkpoint
+    #   3. Unload Launderer entirely
+    #   4. Load frozen Defender checkpoint
+    #   5. Score all valid scenarios against Defender
+    #   6. Unload Defender
+    #   7. Reload Launderer from temp checkpoint
+    #   8. Run PPO update on Launderer with real rewards
+    #
+    # For dry-run or when no Defender checkpoint exists, skip steps 2-7
+    # and use dummy scoring (defender_score=0.0).
     print("[4/4] Initializing LaundererEnv...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ppo = LaundererPPO(model, tokenizer, cfg, device)
 
-    # Defender rollout function: None for dry-run, otherwise loads frozen checkpoint
-    defender_rollout_fn = None
-    if cfg.defender_checkpoint and os.path.exists(cfg.defender_checkpoint):
-        print(f"  Loading frozen Defender from {cfg.defender_checkpoint}...")
-        # NOTE: Full Defender loading deferred to self_play.py to avoid
-        # double-loading models on a single L4 GPU. The self-play orchestrator
-        # handles model swapping. For standalone use, this is a placeholder.
-        print("  ⚠ Standalone Defender loading not implemented — use self_play.py")
+    has_defender = bool(cfg.defender_checkpoint and os.path.exists(cfg.defender_checkpoint))
+    if has_defender:
+        print(f"  ✓ Frozen Defender checkpoint found: {cfg.defender_checkpoint}")
+        print(f"    Will use full unload/reload for VRAM-safe scoring")
+    else:
+        print(f"  ⚠ No Defender checkpoint — using dummy scoring (defender_score=0.0)")
 
-    env = LaundererEnv(defender_rollout_fn=defender_rollout_fn)
+    # Use dummy scoring initially — will be replaced per-iteration when Defender is available
+    env = LaundererEnv(defender_rollout_fn=None)
     print(f"  ✓ LaundererEnv ready  |  VRAM: {vram_status()}\n")
 
     # ── Training Loop ──
     iters = 2 if cfg.dry_run else cfg.total_iterations
     eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
     best_reward = -float("inf")
+
+    # KL auto-revert: save weights when mean return improves, revert if it worsens
+    # by more than 30% over 3 consecutive iterations.
+    # KL threshold: 0.3 per update is a reasonable bound for small batches.
+    # Too low (e.g., 0.05) would stall learning; too high (e.g., 10+) allows policy collapse.
+    KL_WARN_THRESHOLD = 0.3  # Log warning if KL exceeds this
+    REVERT_DECLINE_THRESHOLD = 0.30  # 30% decline triggers revert
+    REVERT_PATIENCE = 3  # Must decline for 3 consecutive iterations
+    best_checkpoint_path = os.path.join(cfg.output_dir, "_best_revert")
+    revert_decline_count = 0
+    prev_mean_reward = None
 
     for it in range(1, iters + 1):
         t0 = time.time()
@@ -459,16 +490,195 @@ def train(cfg: LaundererPPOConfig) -> None:
             print(f"  ⚠ No steps collected, skipping iteration {it}")
             continue
 
+        # ── Frozen Defender Scoring (if available) ──
+        # For valid scenarios, replace dummy rewards with real Defender scores.
+        # Uses full unload/reload for VRAM safety.
+        valid_steps = [s for s in batch_steps if s.is_valid]
+        if has_defender and valid_steps and not cfg.dry_run:
+            print(f"  🔄 Scoring {len(valid_steps)} valid scenarios against frozen Defender...")
+            try:
+                # Save Launderer state
+                temp_launderer_path = os.path.join(cfg.output_dir, "_temp_launderer_swap")
+                ppo.save(temp_launderer_path)
+
+                # Unload Launderer
+                del ppo.model
+                del ppo.optimizer
+                del ppo.scheduler
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
+                # Load frozen Defender
+                def_model, def_tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=cfg.defender_checkpoint,
+                    max_seq_length=2048,
+                    load_in_4bit=cfg.load_in_4bit,
+                    dtype=None,
+                )
+                FastLanguageModel.for_inference(def_model)
+
+                # Score each valid scenario
+                from server.aml_environment import AMLEnvironment
+                from server.launderer_env import extract_json, validate_scenario
+                from scenarios.procedural_generator import GeneratedScenario
+                from train_defender_ppo import DefenderPPO, DefenderPPOConfig, format_prompt, parse_action
+
+                def_env = AMLEnvironment()
+                for step in valid_steps:
+                    try:
+                        data = extract_json(step.response_text)
+                        if data is None:
+                            continue
+                        is_valid, _ = validate_scenario(data)
+                        if not is_valid:
+                            continue
+                        scenario = GeneratedScenario(data)
+                        obs = def_env.reset(scenario=scenario)
+
+                        # Run Defender for up to max_steps
+                        for step_num in range(1, cfg.defender_max_steps + 1):
+                            ram = def_env._sm.ram_contents if def_env._sm else []
+                            disk = def_env._sm.disk_contents if def_env._sm else []
+                            kernel = def_env._sm.kernel_directives if def_env._sm else []
+                            prompt = format_prompt(obs, step_num, kernel, disk, ram)
+
+                            inputs = def_tokenizer(
+                                prompt, return_tensors="pt", truncation=True,
+                                max_length=1856,
+                            ).to(device)
+                            with torch.no_grad():
+                                out = def_model.generate(
+                                    **inputs, max_new_tokens=192,
+                                    temperature=0.5, top_p=0.9, do_sample=True,
+                                    pad_token_id=def_tokenizer.eos_token_id,
+                                )
+                            resp = def_tokenizer.decode(out[0][len(inputs["input_ids"][0]):], skip_special_tokens=True)
+                            tool, params = parse_action(resp)
+
+                            from models import AMLAction
+                            try:
+                                obs = def_env.step(AMLAction(tool=tool, parameters=params))
+                            except Exception:
+                                obs = AMLObservation(done=True, reward=-0.1)
+                            if obs.done:
+                                break
+
+                        defender_score = def_env._state.accumulated_reward
+
+                        # Recompute Launderer reward with real Defender score
+                        from server.launderer_env import REWARD_VALID_BASELINE
+                        clamped = max(-1.0, min(1.0, defender_score))
+                        step.reward = round(
+                            REWARD_VALID_BASELINE + (1.0 - REWARD_VALID_BASELINE) * (1.0 - clamped) / 2.0,
+                            4
+                        )
+                        print(f"    Def score={defender_score:+.3f} → Laund reward={step.reward:+.3f}")
+
+                    except Exception as e:
+                        print(f"    ⚠ Defender scoring failed for scenario: {e}")
+
+                # Unload Defender
+                del def_model, def_tokenizer, def_env
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
+                # Reload Launderer
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=temp_launderer_path,
+                    max_seq_length=cfg.max_seq_length,
+                    load_in_4bit=cfg.load_in_4bit,
+                    dtype=None,
+                )
+                model = FastLanguageModel.get_peft_model(
+                    model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
+                    lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
+                    bias="none", use_gradient_checkpointing="unsloth", random_state=42,
+                )
+                ppo = LaundererPPO(model, tokenizer, cfg, device)
+                print(f"  ✓ Launderer reloaded  |  VRAM: {vram_status()}")
+
+            except Exception as e:
+                print(f"  ⚠ Defender swap failed: {e}. Using dummy scores for this iteration.")
+                # Ensure Launderer is still loaded
+                if not hasattr(ppo, 'model') or ppo.model is None:
+                    model, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name=cfg.model_name,
+                        max_seq_length=cfg.max_seq_length,
+                        load_in_4bit=cfg.load_in_4bit,
+                        dtype=None,
+                    )
+                    model = FastLanguageModel.get_peft_model(
+                        model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
+                        lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
+                        bias="none", use_gradient_checkpointing="unsloth", random_state=42,
+                    )
+                    ppo = LaundererPPO(model, tokenizer, cfg, device)
+
         # Compute batch advantages
         LaundererPPO.compute_batch_advantages(batch_steps)
 
-        # PPO Update
-        ppo_stats = ppo.ppo_update(batch_steps)
+        # ── PPO Stability Guard: Advantage Variance Check ──
+        # If all rewards are identical (e.g., all -2.0), advantages are all 0.0
+        # and PPO update produces zero gradients. Skip to avoid wasted compute.
+        adv_var = sum(s.advantage ** 2 for s in batch_steps) / max(len(batch_steps), 1)
+        if adv_var < 1e-10:
+            print(f"  ⚠ Skipping PPO update: advantage variance too low ({adv_var:.2e})")
+            ppo_stats = {
+                "launderer_ppo/loss/policy": 0.0,
+                "launderer_ppo/kl": 0.0,
+                "launderer_ppo/entropy": 0.0,
+                "launderer_ppo/steps_trained": 0,
+                "launderer_ppo/lr": ppo.scheduler.get_last_lr()[0],
+            }
+        else:
+            ppo_stats = ppo.ppo_update(batch_steps)
 
         # Stats
         mean_reward = sum(s.reward for s in batch_steps) / len(batch_steps)
         valid_count = sum(1 for s in batch_steps if s.is_valid)
+        mean_kl = ppo_stats.get("launderer_ppo/kl", 0.0)
         elapsed = time.time() - t0
+
+        # KL warning
+        if abs(mean_kl) > KL_WARN_THRESHOLD:
+            print(f"  ⚠ KL={mean_kl:.4f} exceeds threshold {KL_WARN_THRESHOLD}")
+
+        # KL auto-revert: track consecutive reward decline
+        if prev_mean_reward is not None and prev_mean_reward > -1.5:
+            decline = (prev_mean_reward - mean_reward) / max(abs(prev_mean_reward), 1e-6)
+            if decline > REVERT_DECLINE_THRESHOLD:
+                revert_decline_count += 1
+                if revert_decline_count >= REVERT_PATIENCE and os.path.exists(best_checkpoint_path):
+                    print(f"  🔄 Auto-reverting weights: reward declined {revert_decline_count}x in a row")
+                    # Reload from best checkpoint
+                    try:
+                        old_model = ppo.model
+                        model, tokenizer = FastLanguageModel.from_pretrained(
+                            model_name=best_checkpoint_path,
+                            max_seq_length=cfg.max_seq_length,
+                            load_in_4bit=cfg.load_in_4bit,
+                            dtype=None,
+                        )
+                        model = FastLanguageModel.get_peft_model(
+                            model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
+                            lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
+                            bias="none", use_gradient_checkpointing="unsloth", random_state=42,
+                        )
+                        del old_model
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        ppo = LaundererPPO(model, tokenizer, cfg, device)
+                        revert_decline_count = 0
+                    except Exception as e:
+                        print(f"  ⚠ Auto-revert failed: {e}")
+            else:
+                revert_decline_count = 0
+        prev_mean_reward = mean_reward
 
         print(
             f"\n  ═══ Iter {it}/{iters} ═══\n"
@@ -487,6 +697,7 @@ def train(cfg: LaundererPPOConfig) -> None:
                 "iteration": it,
                 "launderer/returns/mean": mean_reward,
                 "launderer/valid_rate": valid_count / max(len(batch_steps), 1),
+                "launderer/adv_variance": adv_var,
                 **ppo_stats,
                 "perf/iter_seconds": elapsed,
             })
@@ -495,6 +706,7 @@ def train(cfg: LaundererPPOConfig) -> None:
         if mean_reward > best_reward:
             best_reward = mean_reward
             ppo.save(os.path.join(cfg.output_dir, "best"))
+            ppo.save(best_checkpoint_path)  # For auto-revert
         if it % cfg.save_every == 0:
             ppo.save(os.path.join(cfg.output_dir, f"iter-{it}"))
 
@@ -513,6 +725,8 @@ def train(cfg: LaundererPPOConfig) -> None:
     if not cfg.dry_run:
         import wandb
         wandb.finish()
+
+    return best_reward
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -256,7 +256,7 @@ class AMLGrader:
 
         if not is_suspicious:
             # Clean scenario: reward if agent recognized it as clean
-            r_typology = 0.5 if agent_typo in ("clean", "") else 0.0
+            r_typology = 0.5 if agent_typo in ("clean", "false_positive", "") else 0.0
         elif agent_typo and agent_typo == gt_typo:
             r_typology = 0.5   # All correct
         elif agent_typo and gt_typo and agent_typo != gt_typo:

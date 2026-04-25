@@ -181,12 +181,9 @@ def run_defender_phase(
     print(f"    Mix ratio: {mix_ratio:.2f}  |  Launderer: {launderer_ckpt or 'N/A'}")
     print(f"{'━'*60}\n")
 
-    train(defender_cfg)
+    best_score = train(defender_cfg)
     unload_model()
-
-    # Score approximation: read best checkpoint metric if available
-    # For now, return 0.0 (actual score tracked via WandB)
-    return 0.0
+    return best_score if best_score is not None else 0.0
 
 
 def run_launderer_phase(
@@ -217,10 +214,9 @@ def run_launderer_phase(
     print(f"    Iterations: {iterations}  |  Defender: {defender_ckpt or 'N/A'}")
     print(f"{'━'*60}\n")
 
-    train(launderer_cfg)
+    best_score = train(launderer_cfg)
     unload_model()
-
-    return 0.0
+    return best_score if best_score is not None else 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════

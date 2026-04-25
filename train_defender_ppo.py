@@ -334,12 +334,22 @@ class DefenderPPO:
     def rollout(
         self, env: AMLEnvironment, difficulty: str, typology: str,
         scenario_source: str = "procedural",
+        injected_scenario=None,
     ) -> Tuple[List[StepData], EpisodeStats]:
-        """Collect one full episode trajectory."""
+        """Collect one full episode trajectory.
+
+        Args:
+            injected_scenario: Optional pre-built BaseScenario to use instead
+                               of procedural generation. Used for launderer-
+                               generated scenario injection in mixed training.
+        """
         from unsloth import FastLanguageModel
         FastLanguageModel.for_inference(self.model)
 
-        obs = env.reset(task_id=difficulty)
+        if injected_scenario is not None:
+            obs = env.reset(scenario=injected_scenario)
+        else:
+            obs = env.reset(task_id=difficulty)
         steps: List[StepData] = []
 
         for step_num in range(1, self.cfg.max_steps + 1):
@@ -390,6 +400,12 @@ class DefenderPPO:
             ))
 
             if obs.done:
+                # P1-3 FIX: The terminal obs.reward is the grader's composite total
+                # which already includes all accumulated per-step micro-rewards.
+                # Subtract the sum of prior step rewards so GAE counts each reward
+                # unit exactly once (otherwise step rewards are counted 2x).
+                prior_step_reward_sum = sum(s.reward for s in steps[:-1])
+                steps[-1].reward = reward - prior_step_reward_sum
                 break
 
         # Compute GAE advantages
@@ -403,6 +419,7 @@ class DefenderPPO:
         decision_correct = False
         typology_correct = False
         entity_f1 = 0.0
+        detection_label = ""
         if st.decision_made and gt:
             # Check decision
             if st.findings:  # file_sar was called
@@ -410,25 +427,38 @@ class DefenderPPO:
             else:  # close_alert
                 decision_correct = (gt.get("correct_decision") == "close_alert")
 
-            # Typology
+            # Typology — use the persisted submitted_typology from file_sar,
+            # NOT the findings list (which contains free-text descriptions)
             gt_typo = gt.get("typology", "")
-            agent_typo = ""
-            for f in st.findings:
-                if f.lower() in ["structuring", "layering", "trade_based_ml"]:
-                    agent_typo = f.lower()
-                    break
-            typology_correct = (agent_typo == gt_typo)
+            agent_typo = st.submitted_typology.lower().strip() if st.submitted_typology else ""
+            typology_correct = bool(agent_typo and agent_typo == gt_typo)
 
-            # Entity F1
+            # Entity F1 — use the persisted entities_flagged from file_sar,
+            # NOT watchlist_checked (which requires explicit check_watchlist calls)
             gt_entities: Set[str] = set(gt.get("key_entities", []))
-            # Approximate: entities from findings are hard to track perfectly
-            # so use the state's watchlist_checked as proxy
-            flagged: Set[str] = set(st.watchlist_checked) if st.watchlist_checked else set()
+            flagged: Set[str] = set(st.entities_flagged) if st.entities_flagged else set()
             if gt_entities and flagged:
                 tp = len(flagged & gt_entities)
                 prec = tp / max(len(flagged), 1)
                 rec = tp / max(len(gt_entities), 1)
                 entity_f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+            elif not gt.get("is_suspicious", True) and len(flagged) == 0:
+                # Clean scenario; agent correctly flagged nothing
+                entity_f1 = 1.0
+
+            # Detection label (TP/TN/FP/FN)
+            # Use the explicit decision_action field set by the terminal handlers,
+            # NOT submitted_typology which is truthy for close_alert ("false_positive").
+            is_suspicious = gt.get("is_suspicious", True)
+            is_sar = (st.decision_action == "file_sar")
+            if is_suspicious and is_sar:
+                detection_label = "TP"
+            elif not is_suspicious and not is_sar:
+                detection_label = "TN"
+            elif is_suspicious and not is_sar:
+                detection_label = "FN"
+            else:
+                detection_label = "FP"
 
         stats = EpisodeStats(
             score=st.accumulated_reward, steps=len(steps),
@@ -440,6 +470,7 @@ class DefenderPPO:
             decision_correct=decision_correct,
             typology_correct=typology_correct,
             entity_f1=entity_f1,
+            detection=detection_label,
         )
         return steps, stats
 
@@ -516,7 +547,7 @@ class DefenderPPO:
                     policy_loss = -torch.min(surr1, surr2)
 
                     kl = new_lp - step.ref_log_prob
-                    kl_loss = self.cfg.kl_coef * kl.abs()
+                    kl_loss = self.cfg.kl_coef * kl.clamp(min=0)
 
                     loss = (policy_loss + kl_loss - self.cfg.entropy_coef * entropy) / self.cfg.grad_accum_steps
                     loss.backward()
@@ -646,6 +677,139 @@ def train(cfg: DefenderPPOConfig) -> None:
         from curriculum.plr_engine import PLREngine
         plr = PLREngine(buffer_size=cfg.plr_buffer_size)
 
+    # ── Pre-generate launderer scenarios if in mixed mode ──
+    # VRAM-SAFE: Load frozen Launderer ONCE before the training loop,
+    # generate a cache of validated scenarios, then unload the Launderer.
+    # This avoids per-episode model swapping during Defender training.
+    launderer_scenario_cache: list = []
+    has_launderer = bool(
+        cfg.scenario_source == "mixed"
+        and cfg.launderer_checkpoint
+        and os.path.exists(cfg.launderer_checkpoint)
+    )
+    if has_launderer:
+        print(f"  📦 Pre-generating launderer scenarios from {cfg.launderer_checkpoint}...")
+        try:
+            # Save Defender state
+            temp_def_path = os.path.join(cfg.output_dir, "_temp_defender_swap")
+            ppo.save(temp_def_path)
+
+            # Unload Defender
+            del ppo.model, ppo.optimizer, ppo.scheduler
+            import gc as _gc
+            _gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+            # Load frozen Launderer
+            l_model, l_tokenizer = FastLanguageModel.from_pretrained(
+                model_name=cfg.launderer_checkpoint,
+                max_seq_length=4096,
+                load_in_4bit=cfg.load_in_4bit,
+                dtype=None,
+            )
+            FastLanguageModel.for_inference(l_model)
+
+            from server.launderer_env import LaundererEnv, extract_json, validate_scenario
+            from scenarios.procedural_generator import GeneratedScenario
+
+            l_env = LaundererEnv()
+            # Generate enough scenarios for all iterations
+            target_count = max(20, cfg.total_iterations * cfg.episodes_per_iter)
+            generated = 0
+            attempts = 0
+            max_attempts = target_count * 3  # Allow 3x attempts for validation failures
+
+            while generated < target_count and attempts < max_attempts:
+                attempts += 1
+                typo = random.choice(cfg.typologies)
+                diff = random.choice(cfg.difficulties)
+                obs = l_env.reset(typology=typo, difficulty=diff)
+
+                prompt = (
+                    f"<|begin_of_text|>"
+                    f"<|start_header_id|>system<|end_header_id|>\n\n"
+                    f"You generate AML investigation scenarios as JSON objects."
+                    f"<|eot_id|>"
+                    f"<|start_header_id|>user<|end_header_id|>\n\n"
+                    f"{obs.prompt}<|eot_id|>"
+                    f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+                )
+                inputs = l_tokenizer(
+                    prompt, return_tensors="pt", truncation=True, max_length=2048,
+                ).to(device)
+                with torch.no_grad():
+                    out = l_model.generate(
+                        **inputs, max_new_tokens=2048,
+                        temperature=0.7, top_p=0.95, do_sample=True,
+                        pad_token_id=l_tokenizer.eos_token_id,
+                    )
+                resp = l_tokenizer.decode(out[0][len(inputs["input_ids"][0]):], skip_special_tokens=True)
+
+                # Strict gating: only valid scenarios enter the cache
+                data = extract_json(resp)
+                if data is None:
+                    continue
+                is_valid, err = validate_scenario(data)
+                if not is_valid:
+                    continue
+
+                scenario = GeneratedScenario(data)
+                launderer_scenario_cache.append(scenario)
+                generated += 1
+                if generated % 5 == 0:
+                    print(f"    Generated {generated}/{target_count} valid scenarios...")
+
+            print(f"  ✓ Cached {len(launderer_scenario_cache)} valid launderer scenarios")
+
+            # Unload Launderer
+            del l_model, l_tokenizer, l_env
+            _gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+            # Reload Defender
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=temp_def_path,
+                max_seq_length=cfg.max_seq_length,
+                load_in_4bit=cfg.load_in_4bit,
+                dtype=None,
+            )
+            model = FastLanguageModel.get_peft_model(
+                model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
+                lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
+                bias="none", use_gradient_checkpointing="unsloth", random_state=42,
+            )
+            ppo = DefenderPPO(model, tokenizer, cfg, device)
+            print(f"  ✓ Defender reloaded  |  VRAM: {vram_status()}")
+
+        except Exception as e:
+            print(f"  ⚠ Launderer scenario generation failed: {e}")
+            print(f"    Falling back to procedural-only training")
+            has_launderer = False
+            launderer_scenario_cache = []
+            # Ensure Defender is still loaded
+            if not hasattr(ppo, 'model') or ppo.model is None:
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=cfg.model_name,
+                    max_seq_length=cfg.max_seq_length,
+                    load_in_4bit=cfg.load_in_4bit,
+                    dtype=None,
+                )
+                model = FastLanguageModel.get_peft_model(
+                    model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
+                    lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
+                    bias="none", use_gradient_checkpointing="unsloth", random_state=42,
+                )
+                ppo = DefenderPPO(model, tokenizer, cfg, device)
+    else:
+        if cfg.scenario_source == "mixed":
+            print(f"  ⚠ Mixed mode requested but no launderer checkpoint — using procedural only")
+
+    launderer_scenario_idx = 0  # Round-robin index into the cache
+
     iters = 2 if cfg.dry_run else cfg.total_iterations
     eps_per = 1 if cfg.dry_run else cfg.episodes_per_iter
     best_score = -float("inf")
@@ -658,9 +822,9 @@ def train(cfg: DefenderPPOConfig) -> None:
         for ep in range(eps_per):
             # Decide scenario source
             use_launderer = (
-                cfg.scenario_source == "mixed"
+                has_launderer
+                and len(launderer_scenario_cache) > 0
                 and random.random() < cfg.mix_ratio
-                and cfg.launderer_checkpoint
             )
             src = "launderer" if use_launderer else "procedural"
 
@@ -671,11 +835,20 @@ def train(cfg: DefenderPPOConfig) -> None:
                 diff = random.choice(cfg.difficulties)
                 typo = random.choice(cfg.typologies)
 
+            # Get injected scenario if using launderer source
+            injected_scenario = None
+            if use_launderer:
+                injected_scenario = launderer_scenario_cache[
+                    launderer_scenario_idx % len(launderer_scenario_cache)
+                ]
+                launderer_scenario_idx += 1
+
             try:
-                # NOTE: For launderer-generated scenarios, the self_play.py
-                # orchestrator pre-loads scenarios into the env. In standalone
-                # mode, this just uses procedural scenarios.
-                steps, stats = ppo.rollout(env, diff, typo, scenario_source=src)
+                steps, stats = ppo.rollout(
+                    env, diff, typo,
+                    scenario_source=src,
+                    injected_scenario=injected_scenario,
+                )
                 all_steps.extend(steps)
                 ep_stats.append(stats)
 
@@ -779,6 +952,8 @@ def train(cfg: DefenderPPOConfig) -> None:
     if not cfg.dry_run:
         import wandb
         wandb.finish()
+
+    return best_score
 
 
 # ═══════════════════════════════════════════════════════════════════════

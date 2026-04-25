@@ -491,9 +491,9 @@ class MemexPPO:
                     surr2 = torch.clamp(ratio, 1.0 - self.cfg.clip_eps, 1.0 + self.cfg.clip_eps) * adv
                     policy_loss = -torch.min(surr1, surr2)
 
-                    # KL penalty against frozen base (abs prevents negative KL rewarding divergence)
+                    # KL penalty against frozen base (directional: only penalize divergence from reference)
                     kl = new_lp - step.ref_log_prob
-                    kl_loss = self.cfg.kl_coef * kl.abs()
+                    kl_loss = self.cfg.kl_coef * kl.clamp(min=0)
 
                     loss = (policy_loss + kl_loss - self.cfg.entropy_coef * entropy) / self.cfg.grad_accum_steps
                     loss.backward()

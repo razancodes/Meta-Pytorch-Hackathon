@@ -329,8 +329,27 @@ class AMLState(BaseModel):
         description="Key findings recorded during investigation",
     )
 
+    # --- Persisted terminal action fields (for accurate metric tracking) ---
+    submitted_typology: str = Field(
+        default="",
+        description="Typology string submitted via file_sar (for typology accuracy tracking)",
+    )
+    entities_flagged: List[str] = Field(
+        default_factory=list,
+        description="Entity IDs submitted via file_sar (for entity F1 tracking)",
+    )
+
+    # Terminal decision tracking (for reliable detection label derivation)
+    decision_action: str = Field(
+        default="",
+        description="Terminal action taken: 'file_sar' or 'close_alert' (set by handlers)",
+    )
+
     # Reward accumulation
     accumulated_reward: float = 0.0
+
+    # Async poll tracking (for OS metric computation)
+    async_poll_count: int = 0
 
     # Redundancy detection
     tool_call_hashes: List[str] = Field(default_factory=list)

@@ -100,14 +100,29 @@ class AMLEnvironment(Environment):
         episode_id: Optional[str] = None,
         **kwargs: Any,
     ) -> AMLObservation:
-        """Reset the environment and return the initial observation."""
+        """Reset the environment and return the initial observation.
+
+        Args:
+            seed: Optional RNG seed for reproducibility.
+            episode_id: Optional episode identifier.
+            **kwargs:
+                task_id: Difficulty level ("easy", "medium", "hard").
+                scenario: Optional pre-built BaseScenario to use instead of
+                          procedural generation. Used for launderer-generated
+                          scenario injection in mixed training.
+        """
         task_id = kwargs.get("task_id", "easy")
         ep_id = episode_id or str(uuid.uuid4())
+        injected_scenario = kwargs.get("scenario", None)
 
         if seed is not None:
             random.seed(seed)
 
-        self._current_scenario = get_scenario(task_id)
+        # Use injected scenario if provided, otherwise generate procedurally
+        if injected_scenario is not None:
+            self._current_scenario = injected_scenario
+        else:
+            self._current_scenario = get_scenario(task_id)
         self._state = AMLState(
             episode_id=ep_id,
             step_count=0,
@@ -571,6 +586,7 @@ class AMLEnvironment(Environment):
         red_flags_identified, evidence_chain, and ubo_identified.
         """
         self._state.decision_made = True
+        self._state.decision_action = "file_sar"
 
         # Legacy fields (backward compatible)
         findings = params.get("findings", params.get("red_flags_identified", []))
@@ -590,6 +606,8 @@ class AMLEnvironment(Environment):
         ubo_identified = params.get("ubo_identified", None)
 
         self._state.findings.extend(findings)
+        self._state.submitted_typology = typology
+        self._state.entities_flagged = list(entities_involved)
 
         # Build OS metrics from accumulated state
         os_metrics = self._build_os_metrics()
@@ -629,6 +647,7 @@ class AMLEnvironment(Environment):
     def _handle_close_alert(self, params: Dict[str, Any]) -> Tuple[Dict, str, bool, Dict]:
         """Terminal action — close alert as false positive."""
         self._state.decision_made = True
+        self._state.decision_action = "close_alert"
         reason = params.get("reason", "")
         findings = params.get("findings", [])
         entities_involved = params.get("entities_involved", [])
@@ -638,6 +657,8 @@ class AMLEnvironment(Environment):
             findings = [findings]
 
         self._state.findings.extend(findings)
+        self._state.submitted_typology = typology
+        self._state.entities_flagged = list(entities_involved)
 
         # Build OS metrics from accumulated state
         os_metrics = self._build_os_metrics()
@@ -764,6 +785,7 @@ class AMLEnvironment(Environment):
                 {},
             )
 
+        self._state.async_poll_count += 1
         result_data, is_timeout = self._sm.retrieve_async(job_id)
 
         if is_timeout:
