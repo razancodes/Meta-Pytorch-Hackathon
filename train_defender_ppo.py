@@ -50,8 +50,8 @@ from server.aml_environment import AMLEnvironment
 class DefenderPPOConfig:
     # ── Model ──
     model_name: str = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
-    max_seq_length: int = 2048
-    load_in_4bit: bool = True
+    max_seq_length: int = 4096    # A100: 4096 (L4: use 2048)
+    load_in_4bit: bool = False    # A100: BF16 is faster (L4: use True)
 
     # ── LoRA ──
     lora_r: int = 16
@@ -72,7 +72,7 @@ class DefenderPPOConfig:
     gae_lambda: float = 0.95  # GAE λ parameter
     reward_clip: float = 2.0
     max_grad_norm: float = 1.0
-    grad_accum_steps: int = 4
+    grad_accum_steps: int = 8   # A100: 8 (L4: use 4)
 
     # ── Generation ──
     max_new_tokens: int = 192
@@ -81,9 +81,9 @@ class DefenderPPOConfig:
     repetition_penalty: float = 1.1
 
     # ── Environment ──
-    episodes_per_iter: int = 4
+    episodes_per_iter: int = 8  # A100: 8 (L4: use 4)
     total_iterations: int = 50
-    max_steps: int = 25
+    max_steps: int = 35         # A100: 35 gives more room for terminal actions (L4: use 25)
     difficulties: list = field(default_factory=lambda: ["easy", "medium", "hard"])
     typologies: list = field(default_factory=lambda: [
         "structuring", "layering", "trade_based_ml",
@@ -705,26 +705,17 @@ def train(cfg: DefenderPPOConfig) -> None:
     if has_launderer:
         print(f"  📦 Pre-generating launderer scenarios from {cfg.launderer_checkpoint}...")
         try:
-            # Save Defender state
-            temp_def_path = os.path.join(cfg.output_dir, "_temp_defender_swap")
-            ppo.save(temp_def_path)
-
-            # Unload Defender
-            del ppo.model, ppo.optimizer, ppo.scheduler
-            import gc as _gc
-            _gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-
-            # Load frozen Launderer
-            l_model, l_tokenizer = FastLanguageModel.from_pretrained(
+            # ── Dual-model loading: keep Defender in VRAM, load Launderer alongside ──
+            # On A100 (80GB) both models fit comfortably (~32 GB BF16, ~12 GB 4-bit).
+            # This eliminates the ~90s save/unload/reload swap cycle.
+            from unsloth import FastLanguageModel as _FLM
+            l_model, l_tokenizer = _FLM.from_pretrained(
                 model_name=cfg.launderer_checkpoint,
                 max_seq_length=4096,
                 load_in_4bit=cfg.load_in_4bit,
                 dtype=None,
             )
-            FastLanguageModel.for_inference(l_model)
+            _FLM.for_inference(l_model)
 
             from server.launderer_env import LaundererEnv, extract_json, validate_scenario
             from scenarios.procedural_generator import GeneratedScenario
@@ -778,47 +769,19 @@ def train(cfg: DefenderPPOConfig) -> None:
 
             print(f"  ✓ Cached {len(launderer_scenario_cache)} valid launderer scenarios")
 
-            # Unload Launderer
+            # Unload Launderer only — Defender stays loaded
             del l_model, l_tokenizer, l_env
+            import gc as _gc
             _gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-
-            # Reload Defender
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=temp_def_path,
-                max_seq_length=cfg.max_seq_length,
-                load_in_4bit=cfg.load_in_4bit,
-                dtype=None,
-            )
-            model = FastLanguageModel.get_peft_model(
-                model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
-                lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
-                bias="none", use_gradient_checkpointing="unsloth", random_state=42,
-            )
-            ppo = DefenderPPO(model, tokenizer, cfg, device)
-            print(f"  ✓ Defender reloaded  |  VRAM: {vram_status()}")
+            print(f"  ✓ Defender still loaded  |  VRAM: {vram_status()}")
 
         except Exception as e:
             print(f"  ⚠ Launderer scenario generation failed: {e}")
             print(f"    Falling back to procedural-only training")
             has_launderer = False
             launderer_scenario_cache = []
-            # Ensure Defender is still loaded
-            if not hasattr(ppo, 'model') or ppo.model is None:
-                model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name=cfg.model_name,
-                    max_seq_length=cfg.max_seq_length,
-                    load_in_4bit=cfg.load_in_4bit,
-                    dtype=None,
-                )
-                model = FastLanguageModel.get_peft_model(
-                    model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
-                    lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
-                    bias="none", use_gradient_checkpointing="unsloth", random_state=42,
-                )
-                ppo = DefenderPPO(model, tokenizer, cfg, device)
     else:
         if cfg.scenario_source == "mixed":
             print(f"  ⚠ Mixed mode requested but no launderer checkpoint — using procedural only")

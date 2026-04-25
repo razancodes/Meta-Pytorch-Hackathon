@@ -49,9 +49,9 @@ class LaundererPPOConfig:
 
     # Model
     model_name: str = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
-    max_seq_length: int = 4096
-    max_new_tokens: int = 2048  # Launderer generates full scenario JSON
-    load_in_4bit: bool = True
+    max_seq_length: int = 8192    # A100: 8192 (L4: use 4096)
+    max_new_tokens: int = 2048    # Launderer generates full scenario JSON
+    load_in_4bit: bool = False    # A100: BF16 is faster (L4: use True)
 
     # LoRA
     lora_r: int = 16
@@ -67,13 +67,13 @@ class LaundererPPOConfig:
     clip_eps: float = 0.2
     kl_coef: float = 0.05
     entropy_coef: float = 0.02
-    ppo_epochs: int = 2
-    grad_accum_steps: int = 4
+    ppo_epochs: int = 4           # A100: 4 passes per batch (L4: use 2)
+    grad_accum_steps: int = 8     # A100: 8 (L4: use 4)
     max_grad_norm: float = 1.0
 
     # Training loop
     total_iterations: int = 50
-    episodes_per_iter: int = 4
+    episodes_per_iter: int = 8    # A100: 8 (L4: use 4)
     temperature: float = 0.95     # Higher than Defender: Launderer MUST explore diverse scenarios
     top_p: float = 0.90           # Slightly tighter nucleus to avoid gibberish at high temp
     repetition_penalty: float = 1.15  # Increased to prevent template repetition
@@ -513,30 +513,17 @@ def train(cfg: LaundererPPOConfig) -> None:
             continue
 
         # ── Frozen Defender Scoring (if available) ──
-        # For valid scenarios, replace dummy rewards with real Defender scores.
-        # Uses full unload/reload for VRAM safety.
+        # Dual-model loading: keep Launderer in VRAM, load Defender alongside.
+        # On A100 (80GB) both models fit comfortably (~32 GB BF16, ~12 GB 4-bit).
+        # This eliminates the ~90s save/unload/reload swap cycle per iteration.
         valid_steps = [s for s in batch_steps if s.is_valid]
         if has_defender and valid_steps and not cfg.dry_run:
             print(f"  🔄 Scoring {len(valid_steps)} valid scenarios against frozen Defender...")
-            _sched_step = ppo.scheduler.last_epoch  # preserve LR schedule position
             try:
-                # Save Launderer state
-                temp_launderer_path = os.path.join(cfg.output_dir, "_temp_launderer_swap")
-                ppo.save(temp_launderer_path)
-
-                # Unload Launderer
-                del ppo.model
-                del ppo.optimizer
-                del ppo.scheduler
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-
-                # Load frozen Defender
+                # Load Defender alongside Launderer (no unload needed)
                 def_model, def_tokenizer = FastLanguageModel.from_pretrained(
                     model_name=cfg.defender_checkpoint,
-                    max_seq_length=2048,
+                    max_seq_length=4096,
                     load_in_4bit=cfg.load_in_4bit,
                     dtype=None,
                 )
@@ -546,7 +533,7 @@ def train(cfg: LaundererPPOConfig) -> None:
                 from server.aml_environment import AMLEnvironment
                 from server.launderer_env import extract_json, validate_scenario
                 from scenarios.procedural_generator import GeneratedScenario
-                from train_defender_ppo import DefenderPPO, DefenderPPOConfig, format_prompt, parse_action
+                from train_defender_ppo import format_prompt, parse_action
 
                 def_env = AMLEnvironment()
                 for step in valid_steps:
@@ -569,7 +556,7 @@ def train(cfg: LaundererPPOConfig) -> None:
 
                             inputs = def_tokenizer(
                                 prompt, return_tensors="pt", truncation=True,
-                                max_length=1856,
+                                max_length=3840,
                             ).to(device)
                             with torch.no_grad():
                                 out = def_model.generate(
@@ -602,44 +589,15 @@ def train(cfg: LaundererPPOConfig) -> None:
                     except Exception as e:
                         print(f"    ⚠ Defender scoring failed for scenario: {e}")
 
-                # Unload Defender
+                # Unload Defender only — Launderer stays loaded
                 del def_model, def_tokenizer, def_env
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-
-                # Reload Launderer
-                model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name=temp_launderer_path,
-                    max_seq_length=cfg.max_seq_length,
-                    load_in_4bit=cfg.load_in_4bit,
-                    dtype=None,
-                )
-                model = FastLanguageModel.get_peft_model(
-                    model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
-                    lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
-                    bias="none", use_gradient_checkpointing="unsloth", random_state=42,
-                )
-                ppo.reconnect_model(model, tokenizer, _sched_step)
-                print(f"  ✓ Launderer reloaded (sched@{_sched_step})  |  VRAM: {vram_status()}")
+                print(f"  ✓ Defender unloaded, Launderer intact  |  VRAM: {vram_status()}")
 
             except Exception as e:
-                print(f"  ⚠ Defender swap failed: {e}. Using dummy scores for this iteration.")
-                # Ensure Launderer is still loaded
-                if not hasattr(ppo, 'model') or ppo.model is None:
-                    model, tokenizer = FastLanguageModel.from_pretrained(
-                        model_name=cfg.model_name,
-                        max_seq_length=cfg.max_seq_length,
-                        load_in_4bit=cfg.load_in_4bit,
-                        dtype=None,
-                    )
-                    model = FastLanguageModel.get_peft_model(
-                        model, r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
-                        lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
-                        bias="none", use_gradient_checkpointing="unsloth", random_state=42,
-                    )
-                    ppo.reconnect_model(model, tokenizer, _sched_step)
+                print(f"  ⚠ Defender scoring failed: {e}. Using dummy scores for this iteration.")
 
         # Inject small noise to break ties when all rewards are identical.
         # This prevents zero advantage variance from stalling training.
