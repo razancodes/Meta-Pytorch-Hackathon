@@ -69,6 +69,12 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 
 !git clone https://github.com/razancodes/Meta-Pytorch-Hackathon.git
 %cd Meta-Pytorch-Hackathon
+
+# Optional: symlink checkpoints to Google Drive for persistence
+# from google.colab import drive
+# drive.mount('/content/drive')
+# !mkdir -p /content/drive/MyDrive/memex_checkpoints
+# !ln -s /content/drive/MyDrive/memex_checkpoints checkpoints_drive
 ```
 
 ```python
@@ -85,8 +91,17 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 # CELL 4: Dry-run (2 iterations, 1 episode, no WandB)
 # ═══════════════════════════════════════════════════════════
 
-!python train_ppo.py --dry-run
+# Defender PPO dry-run
+!python train_defender_ppo.py --dry-run --scenario-source procedural
+
+# Launderer PPO dry-run
+!python train_launderer_ppo.py --dry-run
+
+# Self-play dry-run (all three phases, tiny iters)
+!python self_play.py --dry-run
 ```
+
+> **⚠️ CLI Note:** `self_play.py --dry-run` automatically uses 2 iterations / 1 episode per phase. There is no `--iterations-per-phase` flag — phase iteration counts are controlled by `--defender-warmup`, `--launderer-iters`, and `--defender-iters` (overridden to small values in dry-run mode).
 
 ```python
 # ═══════════════════════════════════════════════════════════
@@ -128,6 +143,22 @@ wandb.login()
 # Launderer only
 # !python train_launderer_ppo.py --dry-run
 ```
+
+**Self-Play CLI Reference:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--outer-rounds` | `3` | Number of L→D alternating rounds |
+| `--defender-warmup` | `20` | Phase 1 iterations (procedural only) |
+| `--launderer-iters` | `10` | Launderer PPO iterations per round |
+| `--defender-iters` | `15` | Defender mixed-mode iterations per round |
+| `--defender-episodes` | `4` | Episodes per Defender iteration |
+| `--launderer-episodes` | `4` | Episodes per Launderer iteration |
+| `--mix-start` | `0.3` | Initial Launderer scenario fraction |
+| `--mix-max` | `0.7` | Final Launderer scenario fraction |
+| `--mix-schedule` | `linear` | Mix ratio schedule (`linear` or `fixed`) |
+| `--wandb-project` | `memex-selfplay` | WandB project name |
+| `--dry-run` | off | 2 iters × 1 ep per phase |
 
 ```python
 # ═══════════════════════════════════════════════════════════
@@ -171,6 +202,36 @@ wandb.login()
 # !zip -r demo_output.zip demo_output/
 # files.download('demo_output.zip')
 ```
+
+```python
+# ═══════════════════════════════════════════════════════════
+# CELL 8: Save checkpoints to Google Drive
+# ═══════════════════════════════════════════════════════════
+
+import shutil, os
+
+src = "/content/Meta-Pytorch-Hackathon/checkpoints"
+dst = "/content/drive/MyDrive/memex_checkpoints"
+
+shutil.copytree(src, dst, dirs_exist_ok=True)
+print("✅ Done! Find it in your Drive → memex_checkpoints/")
+```
+
+---
+
+## VRAM Budget (L4 = 24 GB)
+
+| Component | VRAM |
+|-----------|------|
+| Base 8B 4-bit (NF4) | ~5.5 GB |
+| LoRA adapters (r=16) | ~0.3 GB |
+| KV cache (2048 seq) | ~2.0 GB |
+| Optimizer (AdamW fp32) | ~1.2 GB |
+| Activations (gradient checkpoint) | ~3-6 GB |
+| **Total** | **~12-15 GB** |
+| **Headroom** | **~9 GB ✓** |
+
+> Only one model is loaded at a time during self-play. The Launderer and Defender never coexist in VRAM.
 
 ---
 
@@ -238,6 +299,7 @@ Both trainers include **10 production-grade safety features** to prevent policy 
 | **Ratio clamping** | `clamp(log_ratio, -10, 10)` before `exp()` | Prevents inf/NaN from policy drift between PPO epochs |
 | **Entropy bonus** | `- entropy_coef × H(π)` in loss | Keeps the policy exploring; prevents collapsing to a single degenerate action |
 | **Return clipping** | `clip(returns, -2.0, +2.0)` | Bounds gradient signals from outlier terminal rewards |
+| **Directional KL** | `kl.clamp(min=0)` not `kl.abs()` | Only penalizes divergence FROM reference; does not penalize convergence TOWARD reference |
 | **Empty response guard** | Dummy EOS if model generates 0 tokens | Prevents NaN from `.mean()` on an empty tensor |
 | **Degenerate response detection** | If >80% repeated tokens, assign -0.15 penalty | Detects and penalizes gibberish output |
 | **Fault-tolerant env.step()** | try/except around environment step, -0.10 penalty | Malformed actions no longer crash the training loop |
