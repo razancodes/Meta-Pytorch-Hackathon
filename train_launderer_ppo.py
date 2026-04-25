@@ -138,6 +138,28 @@ class LaundererPPO:
             self.optimizer, T_max=config.total_iterations, eta_min=config.lr * 0.1,
         )
 
+    def reconnect_model(self, model, tokenizer, scheduler_step: int = 0):
+        """Replace model/tokenizer after VRAM swap, preserving scheduler position.
+
+        During Defender scoring, the Launderer model is unloaded and reloaded.
+        This method reconnects without resetting the cosine LR schedule to
+        step 0, which previously caused LR to collapse to eta_min every
+        iteration.
+        """
+        self.model = model
+        self.tokenizer = tokenizer
+
+        # Must rebuild optimizer — parameter objects are new after model reload.
+        # AdamW momentum state is lost, but scheduler position is preserved.
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        self.optimizer = torch.optim.AdamW(trainable, lr=self.cfg.lr)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=self.cfg.total_iterations, eta_min=self.cfg.lr * 0.1,
+        )
+        # Fast-forward scheduler to pre-swap position
+        for _ in range(scheduler_step):
+            self.scheduler.step()
+
     # ── Log Probability ──────────────────────────────────────────────
 
     def _compute_log_prob(
@@ -496,6 +518,7 @@ def train(cfg: LaundererPPOConfig) -> None:
         valid_steps = [s for s in batch_steps if s.is_valid]
         if has_defender and valid_steps and not cfg.dry_run:
             print(f"  🔄 Scoring {len(valid_steps)} valid scenarios against frozen Defender...")
+            _sched_step = ppo.scheduler.last_epoch  # preserve LR schedule position
             try:
                 # Save Launderer state
                 temp_launderer_path = os.path.join(cfg.output_dir, "_temp_launderer_swap")
@@ -598,8 +621,8 @@ def train(cfg: LaundererPPOConfig) -> None:
                     lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
                     bias="none", use_gradient_checkpointing="unsloth", random_state=42,
                 )
-                ppo = LaundererPPO(model, tokenizer, cfg, device)
-                print(f"  ✓ Launderer reloaded  |  VRAM: {vram_status()}")
+                ppo.reconnect_model(model, tokenizer, _sched_step)
+                print(f"  ✓ Launderer reloaded (sched@{_sched_step})  |  VRAM: {vram_status()}")
 
             except Exception as e:
                 print(f"  ⚠ Defender swap failed: {e}. Using dummy scores for this iteration.")
@@ -616,7 +639,7 @@ def train(cfg: LaundererPPOConfig) -> None:
                         lora_dropout=cfg.lora_dropout, target_modules=cfg.lora_targets,
                         bias="none", use_gradient_checkpointing="unsloth", random_state=42,
                     )
-                    ppo = LaundererPPO(model, tokenizer, cfg, device)
+                    ppo.reconnect_model(model, tokenizer, _sched_step)
 
         # Inject small noise to break ties when all rewards are identical.
         # This prevents zero advantage variance from stalling training.
