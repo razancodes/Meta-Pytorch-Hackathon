@@ -238,7 +238,7 @@ class LaundererPPO:
             reward=result.reward,
             old_log_prob=old_lp,
             ref_log_prob=ref_lp,
-            response_text=resp_text[:200],
+            response_text=resp_text,
             typology=typology,
             difficulty=difficulty,
             is_valid=is_valid,
