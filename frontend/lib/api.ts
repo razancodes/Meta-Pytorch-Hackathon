@@ -4,7 +4,9 @@
 
 import { StepResponse } from './types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// When served from HF Spaces (same origin as FastAPI), use '' for same-origin.
+// In local dev, NEXT_PUBLIC_API_URL can point to the backend.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;

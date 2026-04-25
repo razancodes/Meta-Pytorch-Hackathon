@@ -3,7 +3,7 @@ name: aml_investigation_env
 type: space
 runtime: fastapi
 app: openenv_server:app
-port: 8000
+port: 7860
 
 models:
   - name: "Qwen/Qwen2.5-72B-Instruct"

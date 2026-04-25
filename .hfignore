@@ -11,11 +11,12 @@ __pycache__/
 *.pyo
 *.egg-info/
 
-# Node / Frontend build artifacts (not needed for the env server)
+# Node / Frontend build artifacts (source not needed for env server)
 node_modules/
 .next/
 .turbo/
 frontend/
+# NOTE: static_frontend/ is NOT excluded — it's served at /web
 
 # Training artifacts
 checkpoints/
@@ -42,6 +43,10 @@ secrets/
 
 # Gemini / AI
 .gemini/
+
+# Dev artifacts
+design-skills/
+.cursor/
 
 # Logs
 *.log

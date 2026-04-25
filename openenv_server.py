@@ -116,6 +116,8 @@ except ImportError:
 if not _openenv_available:
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import RedirectResponse
     from pydantic import BaseModel, Field
 
     # -- Request / Response schemas matching OpenEnv types -------------------
@@ -271,17 +273,43 @@ if not _openenv_available:
 
     @app.get("/", tags=["Environment Info"])
     async def root():
-        """Landing page with API overview."""
+        """Redirect to the visual demo if available, else show API info."""
+        _static_dir = os.path.join(_PROJECT_ROOT, "static_frontend")
+        if os.path.isdir(_static_dir):
+            return RedirectResponse(url="/web/")
         return {
             "name": "aml_investigation_env",
             "version": "0.2.0",
             "openenv_sdk": False,
             "endpoints": [
                 "/health", "/reset", "/step", "/state",
-                "/schema", "/metadata", "/docs",
+                "/schema", "/metadata", "/docs", "/web",
             ],
             "tasks": ["easy", "medium", "hard"],
         }
+
+    # -- Static Frontend (Next.js export) ------------------------------------
+    # NOTE: For standalone mode only. The top-level mount below handles both modes.
+
+
+# =========================================================================== #
+# Static Frontend — mount AFTER app creation in either mode                    #
+# =========================================================================== #
+_static_frontend_dir = os.path.join(_PROJECT_ROOT, "static_frontend")
+if os.path.isdir(_static_frontend_dir):
+    from starlette.staticfiles import StaticFiles as _StaticFiles
+
+    app.mount(
+        "/web",
+        _StaticFiles(directory=_static_frontend_dir, html=True),
+        name="frontend",
+    )
+    logger.info("Mounted static frontend at /web from %s", _static_frontend_dir)
+else:
+    logger.info(
+        "No static_frontend/ directory found at %s — /web route disabled",
+        _static_frontend_dir,
+    )
 
 
 # =========================================================================== #
@@ -312,3 +340,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

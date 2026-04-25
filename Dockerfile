@@ -25,6 +25,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy full project source.
 COPY . /app/
 
+# The static_frontend/ directory contains the pre-built Next.js frontend.
+# It is served at /web by the FastAPI server.
+
 # HF Spaces convention: non-root user with UID 1000.
 RUN useradd -m -u 1000 user && \
     chown -R user:user /app

@@ -74,3 +74,10 @@ validate-curl-*
 
 # Gemini / AI
 .gemini/
+
+# Dev artifacts
+design-skills/
+.cursor/
+
+# Built frontend (generated from frontend/ source)
+static_frontend/
