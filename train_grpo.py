@@ -51,7 +51,12 @@ class GRPOTrainConfig:
     """Configuration for GRPO training."""
 
     # Model
-    model_name: str = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+    # NOTE: Do NOT use the "-bnb-4bit" pre-quantized variant here.
+    # Those models have float16 compute dtype baked into the BNB quantization
+    # config, which causes "Half vs BFloat16" crashes during GRPO training.
+    # Instead, we use the base model and let Unsloth quantize on-the-fly
+    # with the correct bfloat16 compute dtype.
+    model_name: str = "unsloth/Meta-Llama-3.1-8B-Instruct"
     max_seq_length: int = 4096
     load_in_4bit: bool = True
 
@@ -526,15 +531,20 @@ def train(cfg: GRPOTrainConfig) -> None:
 
     import torch
 
-    # Explicitly set dtype to bfloat16 to match GRPOConfig(bf16=True).
-    # Using dtype=None (auto-detect) can pick float16 on some GPUs,
-    # which causes "self and mat2 must have the same dtype, but got
-    # Half and BFloat16" in Unsloth's LoRA matmul kernels.
+    # Use bfloat16 for A100/L40S (native support). On T4/L4, Unsloth
+    # will auto-select float16 if bfloat16 is not supported.
+    compute_dtype = (
+        torch.bfloat16
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        else torch.float16
+    )
+    print(f"  Compute dtype: {compute_dtype}")
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg.model_name,
         max_seq_length=cfg.max_seq_length,
         load_in_4bit=cfg.load_in_4bit,
-        dtype=torch.bfloat16,
+        dtype=compute_dtype,
     )
 
     print("▸ Applying LoRA adapters...")
@@ -602,7 +612,8 @@ def train(cfg: GRPOTrainConfig) -> None:
         logging_steps=cfg.logging_steps,
         save_steps=cfg.save_steps,
         report_to=report_to,
-        bf16=True,
+        bf16=(compute_dtype == torch.bfloat16),
+        fp16=(compute_dtype == torch.float16),
         max_grad_norm=1.0,
         warmup_steps=10,
         lr_scheduler_type="cosine",
