@@ -46,7 +46,7 @@ The Defender agent is trained using [GRPO (Group Relative Policy Optimization)](
 │  1. Prompt Dataset (from procedural scenario engine)            │
 │     └── AMLEnvironment.reset() → initial alert observations    │
 │                                                                 │
-│  2. Model: Qwen2.5-7B-Instruct (Unsloth 4-bit + LoRA)         │
+│  2. Model: Meta-Llama-3.1-8B-Instruct (Unsloth 4-bit + LoRA)  │
 │     └── Generates G=4 completions per prompt                   │
 │                                                                 │
 │  3. Reward Function (OpenEnv pattern)                           │
@@ -64,7 +64,7 @@ The Defender agent is trained using [GRPO (Group Relative Policy Optimization)](
 ### Training on Colab / HF
 
 **Target:** Colab Pro L4 (24 GB VRAM) or HF Jobs (L4/T4)
-**Model:** `unsloth/Qwen2.5-7B-Instruct-bnb-4bit`
+**Model:** `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit`
 **Peak VRAM:** ~12-14 GB (4-bit + LoRA + G=4 generation)
 
 ### Colab Setup (Copy-Paste Cells)
@@ -144,7 +144,7 @@ import wandb
 wandb.login()
 
 !python train_grpo.py \
-    --model unsloth/Qwen2.5-7B-Instruct-bnb-4bit \
+    --model unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit \
     --num-prompts 100 \
     --num-generations 4 \
     --lr 5e-6 \
@@ -228,7 +228,7 @@ print("✅ Model pushed to HuggingFace Hub!")
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `unsloth/Qwen2.5-7B-Instruct-bnb-4bit` | Base model |
+| `--model` | `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit` | Base model |
 | `--num-prompts` | `100` | Unique scenario prompts |
 | `--num-generations` | `4` | G — group size for GRPO |
 | `--lr` | `5e-6` | Learning rate |
@@ -307,7 +307,7 @@ Each completion is executed against a fresh `AMLEnvironment` instance via the Op
 
 | Component | VRAM |
 |-----------|------|
-| Base Qwen 7B 4-bit (NF4) | ~5.5 GB |
+| Base Llama 3.1 8B 4-bit (NF4) | ~5.5 GB |
 | LoRA adapters (r=16) | ~0.3 GB |
 | KV cache (G=4 × 2048 seq) | ~4.0 GB |
 | Optimizer (AdamW fp32) | ~1.2 GB |
@@ -431,7 +431,7 @@ npx prisma migrate dev --name init
    ```
 3. **Hot-swap adapters** into running inference server:
    ```bash
-   python hotswap.py --base unsloth/Qwen2.5-7B-Instruct-bnb-4bit --adapter checkpoints/dpo-latest
+   python hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit --adapter checkpoints/dpo-latest
    ```
 
 ### DPO Hyperparameters
