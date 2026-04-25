@@ -17,12 +17,12 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **Models** | `models.py` | Single source of truth for Pydantic types: `AMLAction`, `AMLObservation`, `AMLState` (with `submitted_typology`, `entities_flagged`, `decision_action`, `async_poll_count`), `AsyncJobInfo`, `AGUIState`, `CurriculumState` |
-| **State Manager** | `state_manager.py` | OS mechanics engine: RAM eviction (2-slot context), Disk persistence, Async Job Queue, Kernel Directives. Entity ID regex matches procedural alphanum patterns (`CUST[A-Z0-9]{3,6}`, `ENT`, `TXN`) |
+| **Models** | `models.py` | Single source of truth for Pydantic types: `AMLAction`, `AMLObservation`, `AMLState` (with `submitted_typology`, `entities_flagged`, `decision_action`, `async_poll_count`, `investigation_tools_used`), `AsyncJobInfo`, `AGUIState`, `CurriculumState` |
+| **State Manager** | `state_manager.py` | OS mechanics engine: RAM eviction (2-slot context), Disk persistence, Async Job Queue, Kernel Directives. Entity ID regex matches both procedural patterns (`CUST`, `ENT_`, `TXN`) and Launderer patterns (`C-`, `T-`, `ALT-`) |
 | **Procedural Generator** | `scenarios/procedural_generator.py` | Dynamic POMDP scenario builder: 3 typologies × 3 difficulties, unique IDs per episode |
-| **Environment** | `server/aml_environment.py` | Core environment: 18 tool handlers + State Manager integration + scenario injection support for self-play |
+| **Environment** | `server/aml_environment.py` | Core environment: 18 tool handlers + State Manager integration + scenario injection + investigation progress bonuses |
 | **Launderer Env** | `server/launderer_env.py` | One-step MDP for Launderer training: robust 3-strategy JSON extraction, schema validation, shaped reward tiers, VRAM-safe frozen Defender scoring |
-| **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + terminal composite score [-1.0, +1.0]. Recognizes `false_positive` as clean-scenario typology |
+| **Grader** | `graders/grader.py` | Dense reward: per-step micro-rewards + investigation bonuses + terminal composite score [-1.0, +1.0]. Recognizes `false_positive` as clean-scenario typology |
 | **OpenEnv Server** | `openenv_server.py` | Production FastAPI entrypoint — OpenEnv SDK `create_app()` + standalone fallback |
 | **Legacy Server** | `server/app.py` | FastAPI HTTP server (dual-mode: OpenEnv / standalone, used by trainers) |
 | **Client** | `client.py` | HTTP client with all 18 tool wrappers |
@@ -33,13 +33,11 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | Component | File | Purpose |
 |-----------|------|---------|
 | **Self-Play Orchestrator** | `self_play.py` | **Production training path.** Alternating best-response: Warmup → [Launderer → Defender] × N rounds. Population-based checkpoint management. Linear mix ratio schedule (0.3 → 0.7). Real score propagation from trainers |
-| **Defender PPO** | `train_defender_ppo.py` | Step-level PPO with GAE (γ=0.99, λ=0.95). Mixed-mode training (procedural + Launderer scenarios). Entity F1, typology accuracy, decision label (TP/TN/FP/FN) tracking. Terminal reward de-duplication to prevent GAE double-counting |
+| **Defender PPO** | `train_defender_ppo.py` | Step-level PPO with GAE (γ=0.99, λ=0.95), EMA reward baseline (α=0.1), batch-wide advantage normalization. Mixed-mode training (procedural + Launderer scenarios). Entity F1, typology accuracy, decision label (TP/TN/FP/FN) tracking. Terminal reward de-duplication |
 | **Launderer PPO** | `train_launderer_ppo.py` | Single-step MDP PPO. Generates evasive scenario JSON, scored against frozen Defender. VRAM-safe full unload/reload cycle. KL auto-revert with advantage variance guard |
-| **Standalone PPO** | `train_ppo.py` | Legacy step-level PPO (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
-| **GRPO** | `train_grpo.py` | Group Relative Policy Optimization (**EXPERIMENTAL** — no clipping, gradient coupling, requires `--experimental`) |
+| **Standalone PPO** | `train_ppo.py` | Step-level PPO with EMA baseline + batch normalization (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
 | **PPO 70B** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster (proof of scalability) |
 | **DPO** | `train_dpo.py` | Offline DPO continuous learning from user preference pairs |
-| **Adversary (Legacy)** | `train_adversary.py` | GAN-style heuristic adversarial loop (**DEPRECATED** — use `self_play.py`) |
 
 ### Infrastructure
 
@@ -82,9 +80,11 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 
 ### Reward System
 
-**Per-step:** action cost (-0.02), redundancy (-0.03), unique tool (+0.03), page fault (-0.05), async timeout (-0.10), disk write (+0.10, max 3/episode), kernel inject (+0.15, max 2/episode)
+**Per-step:** action cost (-0.02), redundancy (-0.03), unique tool (+0.03), **investigation progress bonus (+0.02 to +0.05, first-use per tool type)**, page fault (-0.05), async timeout (-0.10), disk write (+0.10, max 3/episode), kernel inject (+0.15, max 2/episode)
 
-**Terminal:** decision accuracy (0.30) + typology (0.15) + findings coverage (0.20) + entity F1 (0.15) + UBO identification (0.05) + Phase 3 pillar tools (0.05) + efficiency (0.10) → mapped to [-1.0, +1.01] (including OS micro-rewards)
+**Terminal (unnormalized, see `graders/grader.py:RewardWeights`):** detection (1.0) + entity F1/findings (0.5) + typology (0.3) + efficiency (0.2) + OS mechanics (0.2) + UBO bonus (unweighted ±0.05). Accumulated per-step micro-rewards added. Clipped to [-2.0, +2.0]. Lazy policies are formally proven to score lower: E[R_always_SAR] = 0.475 < E[R_reasonable] ≈ 0.68.
+
+> **Design note:** OS mechanics are deliberately rewarded per-step (dense) rather than terminally (sparse), following the TIPS framework (ICLR 2026) for turn-level signal. Investigation progress bonuses create a discoverable reward gradient toward terminal actions, solving the cold-start problem where the model can't find positive rewards through random exploration. The disk write reward is implicitly potential-based (Ng et al. 1999).
 
 ### Scenario Generation
 
@@ -141,7 +141,7 @@ The backend is invisible by design — an LLM managing RAM eviction and async qu
 
 ## Two-Agent Self-Play Architecture
 
-The **production adversarial training approach** is two-agent PPO self-play, replacing the legacy heuristic-based `train_adversary.py`.
+The **production adversarial training approach** is two-agent PPO self-play.
 
 ### Architecture
 
@@ -175,13 +175,19 @@ The **production adversarial training approach** is two-agent PPO self-play, rep
 
 1. **VRAM-Safe Model Swapping:** Full unload/reload (not LoRA adapter swap) between agents. Zero shared state guaranteed. Both agents use ~6 GB loaded, ~12 GB during training. Peak VRAM never exceeds 13 GB on L4 (24 GB available).
 
-2. **Directional KL Penalty:** All 3 trainers use `kl.clamp(min=0)` (not `kl.abs()`) — only penalizes divergence FROM reference model, does not penalize convergence TOWARD it.
+2. **Directional KL Penalty:** All trainers use `kl.clamp(min=0)` (not `kl.abs()`) — only penalizes divergence FROM reference model, does not penalize convergence TOWARD it.
 
 3. **Terminal Reward De-Duplication:** The Defender's GAE advantage computation subtracts prior step reward sum from the terminal composite score to prevent double-counting.
 
-4. **Scenario Injection:** `AMLEnvironment.reset()` accepts an optional `scenario` parameter, allowing Launderer-generated scenarios to be injected during Phase 3 mixed training.
+4. **EMA Reward Baseline:** All trainers track an exponential moving average of episode returns (α=0.1) as a constant V(s) approximation. This provides variance reduction without a critic network.
 
-5. **Population Checkpointing:** `self_play.py` maintains a `CheckpointPopulation` that tracks `best_score` per agent per round, selecting the actual best checkpoint for adversarial scoring.
+5. **Cross-Episode Batch Normalization:** Advantages are normalized across all episodes in a batch, not per episode. This preserves inter-episode ranking: good episodes get positive advantages, bad episodes get negative.
+
+6. **Investigation Progress Bonuses:** First-use-only bonuses for core investigation tools (+0.02 to +0.05) create a discoverable reward gradient, solving the Defender cold-start problem.
+
+7. **Scenario Injection:** `AMLEnvironment.reset()` accepts an optional `scenario` parameter, allowing Launderer-generated scenarios to be injected during Phase 3 mixed training.
+
+8. **Population Checkpointing:** `self_play.py` maintains a `CheckpointPopulation` that tracks `best_score` per agent per round, selecting the actual best checkpoint for adversarial scoring.
 
 ### Launderer Reward Shaping
 
@@ -236,7 +242,7 @@ Our solution: **one model, two modes.** During the forward pass, we call `model.
 
 ### 4. PPO Stability Engineering
 
-Both trainers include **11 production-grade safety features:**
+Both trainers include **14 production-grade safety features:**
 
 - **Mean per-token KL:** `.mean()` not `.sum()` — scale-invariant KL divergence
 - **Directional KL:** `kl.clamp(min=0)` — only penalizes divergence from reference
@@ -248,7 +254,22 @@ Both trainers include **11 production-grade safety features:**
 - **Fault-tolerant `env.step()`:** try/except → -0.10 penalty for malformed actions
 - **Type-safe `parse_action()`:** Forces `params` to dict, catches TypeError/ValueError
 - **KL early stopping:** Break PPO epochs if |KL| > 15
+- **Terminal reward de-duplication:** Subtract prior step rewards from terminal composite to prevent GAE double-counting
 - **Auto-Revert ("Time Machine"):** Entropy heartbeat + checkpoint reload with hyperparameter bump
+- **🆕 Cross-episode batch normalization:** Advantages normalized across all episodes in a batch, preserving inter-episode ranking
+- **🆕 EMA reward baseline:** Exponential moving average (α=0.1) of episode returns as constant V(s) approximation for variance reduction
+
+### Research Context
+
+Our training pipeline aligns with several 2025-2026 RL research directions:
+
+| Technique | Paper/Method | How Memex Uses It |
+|-----------|-------------|-------------------|
+| **Turn-level dense rewards** | TIPS (Xie et al., ICLR 2026) | `grade_step()` provides per-tool-call shaping for OS mechanics |
+| **Value-free advantage estimation** | LOOP (2025) | EMA baseline as constant V(s) approximation; future work: K=2 leave-one-out baseline |
+| **Adaptive environment generation** | EnvGen (2025) | PLR engine + Launderer self-play dynamically adjust scenario difficulty |
+| **Anti-gaming reward design** | Incentive audit best practices | Hard caps, closed action sets, formal lazy-policy analysis |
+| **Potential-based shaping** | Ng et al. (1999) | Per-step OS rewards are potential-based: they reward state improvement without altering the optimal terminal policy |
 
 ### 5. DPO Continuous Learning Pipeline
 
@@ -280,29 +301,6 @@ Both modes capture AGUI state for frontend replay.
 
 ---
 
-## 70B Distributed Training Pipeline (A100 Cluster)
-
-Implemented in `train_ppo_70b.py` using DeepSpeed ZeRO-3.
-
-### VRAM Budget (4× A100-80GB)
-
-| Component | Total | Per-GPU (sharded) |
-|-----------|-------|-------------------|
-| Model weights (4-bit NF4) | ~35 GB | ~9 GB |
-| LoRA adapters (r=32, α=64) | ~150 MB | Replicated on each GPU |
-| Optimizer states (fp32 AdamW) | ~280 GB | ~70 GB |
-| Gradients (bf16) | ~140 GB | ~35 GB |
-| **Peak per-GPU** | — | **~50 GB / 80 GB** |
-
-### Architectural Decisions
-
-1. **Rank-0 Environment:** Only rank 0 runs the AML environment. Trajectories broadcast via `torch.distributed.broadcast_object_list()`.
-2. **`disable_adapter()` Under ZeRO-3:** LoRA operates at module level, independent of parameter sharding.
-3. **DeepSpeed Engine:** Handles `backward()`, gradient accumulation, all-reduce, and clipping internally.
-4. **Distributed Checkpointing:** `engine.save_checkpoint()` saves sharded states per-rank. Tokenizer saved by rank 0 only.
-
----
-
 ## Dependencies
 
 - **Runtime:** Python 3.10+, FastAPI, Pydantic v2, httpx, openai, openenv-core
@@ -325,9 +323,11 @@ Implemented in `train_ppo_70b.py` using DeepSpeed ZeRO-3.
 
 ### 2026-04-25
 
-1. **Final audit fixes:** P1-1 (orchestrator score propagation), P2-2 (KL direction: `kl.abs()` → `kl.clamp(min=0)` in all 3 trainers), grader `false_positive` typology alias for clean-scenario TN detection.
-2. **Self-play dry-run validated on Colab L4:** Full 3-round orchestrator dry-run completes end-to-end. VRAM peak ~12 GB. Scenario pre-generation: 60/60 valid.
-3. **Documentation rewrite:** Updated README, TRAINING, and PROJECT_CONTEXT to reflect self-play as production training path.
+1. **PPO training stability fixes:** Cross-episode batch advantage normalization (replaces per-episode), EMA reward baseline (α=0.1) as constant V(s) for variance reduction, investigation progress bonuses (first-use per tool type), entity regex extended for Launderer IDs.
+2. **PPO signal fixes:** KL metric correction (`abs(kl)` for logging), terminal reward de-duplication, Launderer diversity tuning (temperature, top_p, repetition_penalty), reward noise injection for zero-variance episodes, response text truncation fix.
+3. **Codebase cleanup:** Removed deprecated `train_grpo.py`, `train_adversary.py`, and stale artifacts. Updated all documentation.
+4. **Final audit fixes:** P1-1 (orchestrator score propagation), P2-2 (KL direction: `kl.abs()` → `kl.clamp(min=0)` in all trainers), grader `false_positive` typology alias for clean-scenario TN detection.
+5. **Self-play dry-run validated on Colab L4:** Full 3-round orchestrator dry-run completes end-to-end. VRAM peak ~12 GB.
 
 ### 2026-04-24
 
@@ -335,8 +335,7 @@ Implemented in `train_ppo_70b.py` using DeepSpeed ZeRO-3.
 2. **Critical audit fixes:** P0-1 (entity ID regex), P0-2 (detection labels / TN via `decision_action`), P1-2 (`async_poll_count`), P1-3 (terminal reward de-duplication), P1-1 (orchestrator score propagation).
 3. **AMLState extensions:** Added `submitted_typology`, `entities_flagged`, `decision_action`, `async_poll_count` for ground-truth metric persistence.
 4. **Scenario injection:** `AMLEnvironment.reset()` accepts optional `scenario` parameter for mixed-mode training.
-5. **Documentation rewrite:** Corrected tool count from 15 to 18, verified terminal reward weights against `grader.py`.
-6. **PLR Curriculum Engine:** Added `curriculum/plr_engine.py`, 5th AGUI panel (`CurriculumPanel.tsx`), and `--use-plr` flag.
+5. **PLR Curriculum Engine:** Added `curriculum/plr_engine.py`, 5th AGUI panel (`CurriculumPanel.tsx`), and `--use-plr` flag.
 
 ### 2026-04-23
 

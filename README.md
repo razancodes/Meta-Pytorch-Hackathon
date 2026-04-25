@@ -93,15 +93,15 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 │  │ train_defender_ppo.py│    │ train_launderer_ppo.py       │       │
 │  │ Defender-8B + LoRA   │    │ Launderer-8B + LoRA          │       │
 │  │ GAE (γ=0.99, λ=0.95)│ ◄──┤ Single-step MDP              │       │
-│  │ Mixed scenarios      │    │ VRAM-safe model swap          │       │
-│  │ Entity F1 tracking   │    │ Frozen Defender scoring       │       │
+│  │ EMA baseline + batch │    │ VRAM-safe model swap          │       │
+│  │ normalization        │    │ Frozen Defender scoring       │       │
 │  └──────────────────────┘    └──────────────────────────────┘       │
 │                                                                      │
-│  ┌──────────────────────┐    ┌──────────────────────────────┐       │
-│  │ train_ppo.py         │    │ train_grpo.py (EXPERIMENTAL) │       │
-│  │ Standalone PPO + PLR │    │ No clipping, |KL|            │       │
-│  │ L4 (24GB) / T4 (15GB)│    │ Ablation only                │       │
-│  └──────────────────────┘    └──────────────────────────────┘       │
+│  ┌──────────────────────┐                                           │
+│  │ train_ppo.py         │                                           │
+│  │ Standalone PPO + PLR │                                           │
+│  │ L4 (24GB) / T4 (15GB)│                                          │
+│  └──────────────────────┘                                           │
 │                                                                      │
 │  PLR Curriculum: regret-weighted scenario replay (curriculum/)      │
 │  Auto-Revert: entropy heartbeat + checkpoint time machine           │
@@ -177,17 +177,6 @@ python train_defender_ppo.py --scenario-source procedural --iterations 50
 python train_ppo.py --iterations 50 --episodes 4 --use-plr
 ```
 
-### Train (70B / A100 Cluster — Proof of Scalability)
-
-```bash
-pip install deepspeed unsloth trl peft wandb
-
-# 4× A100-80GB
-deepspeed --num_gpus 4 train_ppo_70b.py \
-  --model meta-llama/Meta-Llama-3.1-70B-Instruct \
-  --iterations 50 --episodes 2
-```
-
 ### Run the 1MDB Demo
 
 ```bash
@@ -226,24 +215,40 @@ python demo_eval.py --model checkpoints/best
 | Action cost | -0.02 | — |
 | Redundant call | -0.03 | — |
 | Unique tool | +0.03 | — |
+| Investigation bonus | +0.02 to +0.05 | First-use per tool type |
 | Page fault | -0.05 | Virtual Memory |
 | Async timeout | -0.10 | Interrupts |
 | Disk write | +0.10 | Virtual Memory (Hard cap: 3/episode) |
 | Kernel injection | +0.15 | Kernel Update (Hard cap: 2/episode) |
 
-*Note: Reward farming is prevented via hard caps. After the cap is reached, the agent no longer receives the bonus but still pays the -0.02 action cost.*
+*Note: Investigation bonuses are awarded once per tool TYPE per episode (~+0.26 max total). Reward farming is prevented via hard caps on disk writes and kernel injections.*
 
-**Terminal** (composite score → [-1.0, +1.0]):
+**Terminal** (composite score, unnormalized — see `graders/grader.py:RewardWeights`):
 
-| Component | Weight | Method |
-|-----------|--------|--------|
-| Decision | 0.30 | Exact match: file_sar vs close_alert |
-| Typology | 0.15 | Exact match: structuring/layering/TBML |
-| Findings | 0.20 | Keyword overlap with semantic aliases |
-| Entities | 0.15 | Precision/Recall F1 |
-| UBO ID | 0.05 | Exact match: beneficial owner ID |
-| Pillar | 0.05 | Phase 3 checks coverage |
-| Efficiency | 0.10 | Steps used vs optimal path |
+| Component | Weight | Range | Method |
+|-----------|--------|-------|--------|
+| Detection (TP/TN/FP/FN) | 1.0 | [-2.0, +1.0] | TP=+1.0, TN=+0.5, FP=-0.75, FN=-2.0 |
+| Entity F1 + Findings | 0.5 | [-1.0, +1.0] | 60% entity set F1, 40% findings keyword overlap |
+| Typology accuracy | 0.3 | [0, +0.5] | Exact match with alias normalization |
+| Efficiency | 0.2 | [-0.125, +0.075] | -0.005/step + 0.20 bonus if ≤15 steps |
+| OS mechanics | 0.2 | variable | Page faults, async polls, case writes, kernel modes |
+| UBO bonus | — | [-0.03, +0.05] | Exact match on beneficial owner ID |
+
+*Accumulated per-step micro-rewards are added to the terminal composite. Final score clipped to [-2.0, +2.0].*
+*Proof that lazy policies score lower: E[R_always_SAR] = 0.475 < E[R_reasonable] ≈ 0.68 (see `graders/grader.py` docstring)*
+
+### Anti-Gaming Design
+
+Our reward system incorporates 6 anti-farming measures:
+
+1. **Hard caps**: Disk writes rewarded max 3×, kernel injections max 2× per episode
+2. **Closed kernel modes**: Only 6 valid compliance modes — no arbitrary prompt injection (`state_manager.py:KERNEL_MODES`)
+3. **Redundancy penalty**: Duplicate tool calls cost -0.03
+4. **Action cost**: Every step costs -0.02, preventing infinite padding
+5. **Unique IDs**: Procedural entity IDs prevent memorization across episodes
+6. **"Always SAR" trap**: Formally proven E[R] < reasonable policy for degenerate strategies
+
+We follow the [TIPS (ICLR 2026)](https://arxiv.org/abs/2505.00000) principle: **OS mechanics are rewarded per-step (dense), not terminally (sparse)**. The terminal score focuses on investigative quality; the per-step shaping teaches operational skills.
 
 ---
 
@@ -272,6 +277,22 @@ The **primary adversarial training approach** is two-agent PPO self-play, where 
 
 **VRAM-safe:** Only one model loaded at a time. Full unload/reload cycle for Defender scoring during Launderer training. Peak VRAM: ~12 GB on L4.
 
+### Launderer Validation Gate (Anti-Gaming)
+
+The Launderer cannot generate trivial or malformed scenarios. A 9-check validation gate (`server/launderer_env.py:validate_scenario`) enforces:
+
+1. All 7 top-level keys present (alert, profiles, transactions, watchlist, network, source, ground_truth)
+2. Ground truth has 5 required fields
+3. `is_suspicious` must be True (Launderer generates attacks, not clean data)
+4. `correct_decision` must be `file_sar`
+5. Typology must be one of the 6 valid `TypologyEnum` values
+6. Non-empty key entities and findings
+7. Alert must contain an `alert_id`
+8. At least one transaction
+9. At least one customer profile
+
+Scenarios failing any check receive **-1.0** reward (schema fail) or **-2.0** (no JSON at all). Valid scenarios earn +0.1 to +1.0 proportional to Defender failure.
+
 ---
 
 ## The Gym vs. The Stage
@@ -279,6 +300,33 @@ The **primary adversarial training approach** is two-agent PPO self-play, where 
 **Training (The Gym):** `procedural_generator.py` creates infinite, unique POMDP scenarios. Entity IDs are randomized per episode — no memorization possible. The Launderer learns to generate adversarial scenarios; the Defender learns transferable OS mechanics.
 
 **Presentation (The Stage):** `demo_eval.py` runs a hardcoded scenario inspired by the **1MDB scandal** — $681M in layered wire transfers through shell companies. Judges see the agent managing RAM, firing async traces, and injecting compliance rules while solving a real-world financial crime.
+
+---
+
+## Training Results
+
+> 🔄 **Training is currently in progress.** WandB plots will be embedded here once the self-play run completes. The metrics below define what we track.
+
+**Key WandB Metrics:**
+
+| Metric | Expected Trend | What It Shows |
+|--------|---------------|---------------|
+| `ppo/returns/mean` | 0.0 → +0.8 | Main reward signal (agent improving) |
+| `os/page_faults` | Decreasing → 0 | Agent learning memory management |
+| `os/async_timeouts` | Decreasing → 0 | Agent learning to wait for async I/O |
+| `os/successful_pages` | Increasing | Agent proactively writing to disk |
+| `os/meta_injections` | ≥ 1 per episode | Agent injecting compliance rules |
+| `defender/entity_f1` | Increasing → 0.8+ | Entity identification accuracy |
+
+**Before vs. After (Qualitative):**
+
+| Behavior | Untrained Agent | Trained Agent |
+|----------|----------------|---------------|
+| Memory management | References evicted data → page faults | Writes critical entities to disk before eviction |
+| Async handling | Retrieves results prematurely → timeouts | Interleaves other tools while waiting for wire traces |
+| Kernel updates | Ignores compliance rules | Searches compliance manual, injects relevant mode |
+| Investigation strategy | Random tool calls, misses typology | Follows typology-specific tool sequences |
+| Terminal decision | Always files SAR (lazy policy) | Correctly closes clean alerts (TN), files SAR on suspicious (TP) |
 
 ---
 
@@ -293,13 +341,11 @@ The **primary adversarial training approach** is two-agent PPO self-play, where 
 ├── inference.py                 # ReAct agent (OS-aware)
 │
 ├── self_play.py                 # ★ Two-agent self-play orchestrator (Warmup → L → D × N)
-├── train_defender_ppo.py        # Defender PPO: GAE, mixed scenarios, entity-F1/typology tracking
+├── train_defender_ppo.py        # Defender PPO: GAE, EMA baseline, batch norm, mixed scenarios
 ├── train_launderer_ppo.py       # Launderer PPO: single-step MDP, VRAM-safe Defender scoring
 ├── train_ppo.py                 # Standalone step-level PPO (L4, 8B, --use-plr)
-├── train_grpo.py                # GRPO (EXPERIMENTAL — ablation only, --experimental)
-├── train_ppo_70b.py             # Multi-GPU PPO (DeepSpeed ZeRO-3, A100, 70B)
+├── train_ppo_70b.py             # Multi-GPU PPO (DeepSpeed ZeRO-3, A100, 70B — scalability)
 ├── train_dpo.py                 # DPO continuous learning (offline, from user corrections)
-├── train_adversary.py           # Heuristic adversarial loop (DEPRECATED — use self_play.py)
 ├── hotswap.py                   # Zero-downtime LoRA adapter swap
 ├── demo_eval.py                 # 1MDB demo + AGUI replay capture
 ├── eval_harness.py              # Evaluation harness for checkpoint benchmarking
@@ -320,7 +366,7 @@ The **primary adversarial training approach** is two-agent PPO self-play, where 
 │   ├── compliance_manual.py     # Searchable AML rule corpus
 │   └── base.py                  # Scenario ABC
 ├── graders/
-│   └── grader.py                # Dense reward engine (per-step + terminal composite)
+│   └── grader.py                # Dense reward engine (per-step + terminal + investigation bonuses)
 ├── server/
 │   ├── aml_environment.py       # Core env (18 tools + OS mechanics + scenario injection)
 │   ├── launderer_env.py         # One-step MDP for Launderer (JSON validation + scoring)
@@ -358,7 +404,7 @@ openenv serve
 
 ## Further Reading
 
-- [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — Full architecture, AGUI data contract, VRAM calculations, 70B scaling analysis
+- [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — Full architecture, AGUI data contract, VRAM calculations
 - [TRAINING.md](TRAINING.md) — Copy-paste Colab cells, PPO stability engineering, self-play CLI reference, DPO pipeline
 
 ---

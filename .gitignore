@@ -62,6 +62,7 @@ checkpoints_70b/
 demo_output/
 outputs/
 wandb/
+*.db
 
 # Lock files (using requirements.txt)
 uv.lock
