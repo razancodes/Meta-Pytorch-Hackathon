@@ -288,7 +288,7 @@ class HarnessResult:
 # Runner
 # ═══════════════════════════════════════════════════════════════════════
 
-def run_scenario(eval_scenario: EvalScenario, verbose: bool = True) -> ScenarioResult:
+def run_scenario(eval_scenario: EvalScenario, verbose: bool = True, model: Any = None, tokenizer: Any = None) -> ScenarioResult:
     """Execute a single evaluation scenario and collect metrics."""
     result = ScenarioResult(
         scenario_name=eval_scenario.name,
@@ -314,43 +314,126 @@ def run_scenario(eval_scenario: EvalScenario, verbose: bool = True) -> ScenarioR
 
         last_job_id = None
 
-        for step_idx, action_def in enumerate(eval_scenario.actions):
-            tool = action_def["tool"]
-            params = dict(action_def["parameters"])
+        if model is not None and tokenizer is not None:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            from train_grpo import DEFENDER_SYSTEM_PROMPT, parse_tool_call
+            
+            for step_idx in range(1, 26):
+                ram = list(env._sm.ram_queue) if env._sm else []
+                disk = env._sm.disk_contents if env._sm else []
+                kernel = env._sm.kernel_directives if env._sm else []
 
-            # Dynamic job ID substitution
-            if "__LAST_JOB_ID__" in str(params):
-                if last_job_id is None:
-                    last_job_id = "REQ-001"
-                params = {k: (last_job_id if v == "__LAST_JOB_ID__" else v) for k, v in params.items()}
+                alert = obs.tool_result.get("alert", {}) if step_idx == 1 else {}
+                if step_idx == 1:
+                    alert_text = (
+                        f"New AML Alert Assigned:\n"
+                        f"- Alert ID: {alert.get('alert_id', 'N/A')}\n"
+                        f"- Summary: {alert.get('summary', 'No summary')}\n"
+                        f"- Customer: {alert.get('customer_id', 'N/A')}\n"
+                        f"- Risk Level: {alert.get('risk_level', 'N/A')}\n"
+                        f"- Total Amount: ${alert.get('total_amount', 'N/A')}\n"
+                        f"- Alert Type: {alert.get('alert_type', eval_scenario.typology)}\n\n"
+                        f"Available tools: {obs.available_tools}\n\n"
+                        f"Investigate this alert. Use the available tools to gather evidence, "
+                        f"then make your decision: file_sar or close_alert."
+                    )
+                else:
+                    alert_text = (
+                        f"Observation:\n{obs.message}\n"
+                        f"Tool result: {obs.tool_result}\n\n"
+                        f"Memory: {ram}\nDisk: {disk}\nKernel: {kernel}\n\n"
+                        f"Action JSON:"
+                    )
+                    
+                messages = [
+                    {"role": "system", "content": DEFENDER_SYSTEM_PROMPT},
+                    {"role": "user", "content": alert_text},
+                ]
+                
+                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1856).to(device)
+                
+                with torch.no_grad():
+                    out = model.generate(
+                        **inputs, max_new_tokens=192, temperature=0.3,
+                        top_p=0.9, do_sample=True, repetition_penalty=1.1,
+                        pad_token_id=tokenizer.eos_token_id,
+                    )
+                response = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+                
+                action_def = parse_tool_call(response)
+                if not action_def:
+                    action_def = {"tool": "invalid_action", "parameters": {}}
+                    
+                tool = action_def.get("tool", "invalid_action")
+                params = action_def.get("parameters", {})
+                
+                if "__LAST_JOB_ID__" in str(params):
+                    if last_job_id is None:
+                        last_job_id = "REQ-001"
+                    params = {k: (last_job_id if v == "__LAST_JOB_ID__" else v) for k, v in params.items()}
+                
+                obs = env.step(AMLAction(tool=tool, parameters=params))
+                
+                if tool == "request_wire_trace" and isinstance(obs.tool_result, dict):
+                    last_job_id = obs.tool_result.get("job_id", last_job_id)
 
-            obs = env.step(AMLAction(tool=tool, parameters=params))
+                result.tool_calls.append(tool)
+                result.total_steps += 1
+                reward = obs.reward if obs.reward is not None else 0.0
+                if reward == -0.05 or (isinstance(obs.tool_result, dict) and obs.tool_result.get("page_fault")):
+                    result.page_faults += 1
+                if tool == "write_to_case_file" and reward > 0:
+                    result.disk_writes += 1
+                if tool == "update_system_prompt" and reward > 0:
+                    result.kernel_injections += 1
+                if tool == "retrieve_async_result" and reward < 0:
+                    result.async_timeouts += 1
 
-            # Capture async job IDs
-            if tool == "request_wire_trace" and isinstance(obs.tool_result, dict):
-                last_job_id = obs.tool_result.get("job_id", last_job_id)
-
-            result.tool_calls.append(tool)
-            result.total_steps += 1
-
-            # Track OS mechanics from observations
-            reward = obs.reward if obs.reward is not None else 0.0
-            if reward == -0.05 or (isinstance(obs.tool_result, dict) and obs.tool_result.get("page_fault")):
-                result.page_faults += 1
-            if tool == "write_to_case_file" and reward > 0:
-                result.disk_writes += 1
-            if tool == "update_system_prompt" and reward > 0:
-                result.kernel_injections += 1
-            if tool == "retrieve_async_result" and reward < 0:
-                result.async_timeouts += 1
-
-            if verbose:
-                r_str = f"R={reward:+.4f}"
-                done_str = "DONE" if obs.done else "ok"
-                print(f"    Step {step_idx+1:>2} | {tool:<30} | {r_str} | {done_str}")
-
-            if obs.done:
-                break
+                if verbose:
+                    print(f"    Step {step_idx:>2} | {tool:<30} | R={reward:+.4f} | {'DONE' if obs.done else 'ok'}")
+                    
+                if obs.done:
+                    break
+        else:
+            for step_idx, action_def in enumerate(eval_scenario.actions):
+                tool = action_def["tool"]
+                params = dict(action_def["parameters"])
+    
+                # Dynamic job ID substitution
+                if "__LAST_JOB_ID__" in str(params):
+                    if last_job_id is None:
+                        last_job_id = "REQ-001"
+                    params = {k: (last_job_id if v == "__LAST_JOB_ID__" else v) for k, v in params.items()}
+    
+                obs = env.step(AMLAction(tool=tool, parameters=params))
+    
+                # Capture async job IDs
+                if tool == "request_wire_trace" and isinstance(obs.tool_result, dict):
+                    last_job_id = obs.tool_result.get("job_id", last_job_id)
+    
+                result.tool_calls.append(tool)
+                result.total_steps += 1
+    
+                # Track OS mechanics from observations
+                reward = obs.reward if obs.reward is not None else 0.0
+                if reward == -0.05 or (isinstance(obs.tool_result, dict) and obs.tool_result.get("page_fault")):
+                    result.page_faults += 1
+                if tool == "write_to_case_file" and reward > 0:
+                    result.disk_writes += 1
+                if tool == "update_system_prompt" and reward > 0:
+                    result.kernel_injections += 1
+                if tool == "retrieve_async_result" and reward < 0:
+                    result.async_timeouts += 1
+    
+                if verbose:
+                    r_str = f"R={reward:+.4f}"
+                    done_str = "DONE" if obs.done else "ok"
+                    print(f"    Step {step_idx+1:>2} | {tool:<30} | {r_str} | {done_str}")
+    
+                if obs.done:
+                    break
 
         result.final_score = env._state.accumulated_reward
         result.completed = True
@@ -368,6 +451,7 @@ def run_harness(
     scenario_names: Optional[List[str]] = None,
     ram_capacity: int = 2,
     verbose: bool = True,
+    checkpoint_path: Optional[str] = None,
 ) -> HarnessResult:
     """Run the full evaluation harness."""
     from state_manager import RAM_CAPACITY as default_ram
@@ -377,11 +461,25 @@ def run_harness(
 
     harness = HarnessResult(ram_capacity=ram_capacity)
 
+    model, tokenizer = None, None
+    if checkpoint_path:
+        from unsloth import FastLanguageModel
+        if verbose:
+            print(f"  [+] Loading checkpoint: {checkpoint_path}...")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=checkpoint_path, max_seq_length=2048, load_in_4bit=True,
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        FastLanguageModel.for_inference(model)
+
     if verbose:
         print("\n" + "=" * 60)
         print(f"  MEMEX EVALUATION HARNESS")
         print(f"  Scenarios: {len(scenario_names)}")
         print(f"  RAM Capacity: {ram_capacity}")
+        if checkpoint_path:
+            print(f"  Model: {checkpoint_path}")
         print("=" * 60 + "\n")
 
     for name in scenario_names:
@@ -395,7 +493,7 @@ def run_harness(
             print(f"  [{name.upper()}] {eval_scenario.description}")
             print(f"  Typology: {eval_scenario.typology} | Difficulty: {eval_scenario.difficulty}")
 
-        result = run_scenario(eval_scenario, verbose=verbose)
+        result = run_scenario(eval_scenario, verbose=verbose, model=model, tokenizer=tokenizer)
         harness.scenarios.append(result)
 
         if verbose:
@@ -449,6 +547,9 @@ def main():
     p.add_argument("--scenario", type=str, default=None,
                    choices=list(SCENARIO_BUILDERS.keys()),
                    help="Run a single scenario (default: all)")
+    p.add_argument("--checkpoint", "--model", type=str, default=None,
+                   dest="checkpoint_path",
+                   help="Path to trained checkpoint to evaluate (LLM-driven)")
     p.add_argument("--output", type=str, default="eval_results.json",
                    help="Output JSON file for results")
     p.add_argument("--ram-capacity", type=int, default=2,
@@ -463,6 +564,7 @@ def main():
         scenario_names=scenarios,
         ram_capacity=args.ram_capacity,
         verbose=not args.quiet,
+        checkpoint_path=args.checkpoint_path,
     )
 
     # Write JSON output
