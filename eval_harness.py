@@ -301,16 +301,28 @@ def run_scenario(eval_scenario: EvalScenario, verbose: bool = True, model: Any =
     t0 = time.time()
 
     try:
+        # Map eval typologies to generator-supported typologies.
+        # The procedural generator only supports: structuring, layering, trade_based_ml.
+        # Eval-only typologies get mapped to the closest supported one.
+        _TYPOLOGY_MAP = {
+            "structuring": "structuring",
+            "layering": "layering",
+            "trade_based_ml": "trade_based_ml",
+            "mule_ring": "layering",         # mule rings share layering patterns
+            "pass_through": "layering",       # pass-through shells are a layering variant
+        }
+        gen_typology = _TYPOLOGY_MAP.get(eval_scenario.typology, "layering")
+
         # Generate a procedural scenario matching the typology
         generator = ScenarioGenerator()
         scenario = generator.generate(
-            typology=eval_scenario.typology,
+            typology=gen_typology,
             difficulty=eval_scenario.difficulty,
         )
 
-        # Create environment
-        env = AMLEnvironment(scenario)
-        obs = env.reset()
+        # Create environment and inject the generated scenario via reset()
+        env = AMLEnvironment()
+        obs = env.reset(scenario=scenario)
 
         last_job_id = None
 
