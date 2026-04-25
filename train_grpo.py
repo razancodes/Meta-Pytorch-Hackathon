@@ -240,6 +240,12 @@ class MemexGRPO:
             ))
 
             if obs.done:
+                # De-duplicate: terminal obs.reward from file_sar/close_alert
+                # includes accumulated per-step rewards (added by the grader).
+                # Subtract prior steps to avoid double-counting in returns.
+                if len(steps) > 1:
+                    prior_step_reward_sum = sum(s.reward for s in steps[:-1])
+                    steps[-1].reward = reward - prior_step_reward_sum
                 break
 
         st = env._state

@@ -409,6 +409,12 @@ class MemexPPO:
             ))
 
             if obs.done:
+                # De-duplicate: terminal obs.reward from file_sar/close_alert
+                # includes accumulated per-step rewards (added by the grader).
+                # Subtract prior steps to avoid double-counting in returns.
+                if len(steps) > 1:
+                    prior_step_reward_sum = sum(s.reward for s in steps[:-1])
+                    steps[-1].reward = reward - prior_step_reward_sum
                 break
 
         # Compute discounted returns and advantages
@@ -499,10 +505,10 @@ class MemexPPO:
                     loss.backward()
 
                     total_policy_loss += policy_loss.item()
-                    total_kl += kl.item()
+                    total_kl += abs(kl.item())
                     total_entropy += entropy.item()
                     n_updates += 1
-                    epoch_kl += kl.item()
+                    epoch_kl += abs(kl.item())
                     epoch_steps += 1
 
                     # Gradient accumulation step

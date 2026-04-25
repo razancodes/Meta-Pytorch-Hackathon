@@ -553,10 +553,10 @@ class DefenderPPO:
                     loss.backward()
 
                     total_policy_loss += policy_loss.item()
-                    total_kl += kl.item()
+                    total_kl += abs(kl.item())
                     total_entropy += entropy.item()
                     n_updates += 1
-                    epoch_kl += kl.item()
+                    epoch_kl += abs(kl.item())
                     epoch_steps += 1
 
                     if (i + 1) % self.cfg.grad_accum_steps == 0:

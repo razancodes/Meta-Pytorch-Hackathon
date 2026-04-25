@@ -74,9 +74,9 @@ class LaundererPPOConfig:
     # Training loop
     total_iterations: int = 50
     episodes_per_iter: int = 4
-    temperature: float = 0.7
-    top_p: float = 0.95
-    repetition_penalty: float = 1.1
+    temperature: float = 0.95     # Higher than Defender: Launderer MUST explore diverse scenarios
+    top_p: float = 0.90           # Slightly tighter nucleus to avoid gibberish at high temp
+    repetition_penalty: float = 1.15  # Increased to prevent template repetition
 
     # Defender
     defender_checkpoint: str = ""  # Path to frozen Defender LoRA checkpoint
@@ -301,7 +301,7 @@ class LaundererPPO:
                     loss.backward()
 
                     total_policy_loss += policy_loss.item()
-                    total_kl += kl.item()
+                    total_kl += abs(kl.item())
                     total_entropy += entropy.item()
                     n_updates += 1
 
@@ -617,6 +617,19 @@ def train(cfg: LaundererPPOConfig) -> None:
                         bias="none", use_gradient_checkpointing="unsloth", random_state=42,
                     )
                     ppo = LaundererPPO(model, tokenizer, cfg, device)
+
+        # Inject small noise to break ties when all rewards are identical.
+        # This prevents zero advantage variance from stalling training.
+        # σ=0.02 is small enough not to corrupt the signal but large
+        # enough to create non-zero advantages for PPO to act on.
+        reward_std = max(
+            (sum((s.reward - sum(r.reward for r in batch_steps) / len(batch_steps)) ** 2
+                 for s in batch_steps) / len(batch_steps)) ** 0.5,
+            0.0,
+        )
+        if reward_std < 1e-6:
+            for s in batch_steps:
+                s.reward += random.gauss(0, 0.02)
 
         # Compute batch advantages
         LaundererPPO.compute_batch_advantages(batch_steps)
