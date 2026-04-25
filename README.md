@@ -77,35 +77,21 @@ The obstacle course: **Anti-Money Laundering investigations** — a $274B/year i
 └──────────────────────────────────────────────────────────────────────┘
                                 │
 ┌──────────────────────────────────────────────────────────────────────┐
-│               SELF-PLAY TRAINING (Two-Agent PPO)                     │
+│                  PRIMARY TRAINING (GRPO via TRL)                     │
 │                                                                      │
 │  ┌─────────────────────────────────────────────────────────────┐     │
-│  │  self_play.py — Alternating Best-Response Orchestrator      │     │
+│  │  train_grpo.py — TRL GRPOTrainer + Unsloth (A100)           │     │
 │  │                                                             │     │
-│  │  Phase 1: Defender Warm-Start (procedural scenarios)        │     │
-│  │  ┌── Outer Round 1..N:                                      │     │
-│  │  │  Phase 2: Launderer PPO vs frozen Defender               │     │
-│  │  │  Phase 3: Defender PPO on mixed scenarios                │     │
-│  │  └── (mix ratio: 0.3 → 0.7 linear)                         │     │
+│  │  Model: Meta-Llama-3.1-8B-Instruct (4-bit + LoRA r=16)      │     │
+│  │  Method: G=4 completions/prompt, group-relative advantages  │     │
+│  │  Anti-Gaming: 4 decomposed reward functions summed          │     │
+│  │    R1: Format Compliance (Valid JSON)                       │     │
+│  │    R2: Investigation Quality (Tool Selection)               │     │
+│  │    R3: Environment Execution (Ground-truth env.step)        │     │
+│  │    R4: OS Mechanics (Memory, Async, Kernel usage)           │     │
 │  └─────────────────────────────────────────────────────────────┘     │
 │                                                                      │
-│  ┌──────────────────────┐    ┌──────────────────────────────┐       │
-│  │ train_defender_ppo.py│    │ train_launderer_ppo.py       │       │
-│  │ Defender-8B + LoRA   │    │ Launderer-8B + LoRA          │       │
-│  │ GAE (γ=0.99, λ=0.95)│ ◄──┤ Single-step MDP              │       │
-│  │ EMA baseline + batch │    │ VRAM-safe model swap          │       │
-│  │ normalization        │    │ Frozen Defender scoring       │       │
-│  └──────────────────────┘    └──────────────────────────────┘       │
-│                                                                      │
-│  ┌──────────────────────┐                                           │
-│  │ train_ppo.py         │                                           │
-│  │ Standalone PPO + PLR │                                           │
-│  │ L4 (24GB) / T4 (15GB)│                                          │
-│  └──────────────────────┘                                           │
-│                                                                      │
-│  PLR Curriculum: regret-weighted scenario replay (curriculum/)      │
-│  Auto-Revert: entropy heartbeat + checkpoint time machine           │
-│  VRAM-safe: only one model loaded at a time (full unload/reload)    │
+│  Alternative: Self-Play (Launderer PPO vs Defender PPO)              │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -148,9 +134,24 @@ export HF_TOKEN="sk-..."
 python inference.py
 ```
 
-### Train — Self-Play (L4 / Colab Pro)
+### Train — GRPO (A100 — Production Path)
 
-The **production training path** is two-agent self-play: a Defender learns to investigate AML cases while a Launderer learns to generate evasive scenarios.
+The **primary training path** is GRPO using TRL and Unsloth, optimized for A100 GPUs. It evaluates 4 completions per prompt across 4 independent reward functions to prevent gaming.
+
+```bash
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install trl peft accelerate bitsandbytes wandb pydantic>=2.0.0
+
+# Dry-run (2 prompts, 1 epoch, no WandB)
+python train_grpo.py --dry-run
+
+# Full GRPO training run (100 prompts)
+python train_grpo.py
+```
+
+### Train — Self-Play (L4 / Colab Pro — Alternative)
+
+An alternative training path is two-agent PPO self-play: a Defender learns to investigate while a Launderer learns to generate evasive scenarios.
 
 ```bash
 pip install unsloth trl peft accelerate bitsandbytes wandb
@@ -165,16 +166,6 @@ python self_play.py \
     --launderer-iters 10 \
     --defender-iters 15 \
     --wandb-project memex-selfplay
-```
-
-Or train individual agents:
-
-```bash
-# Defender only (procedural scenarios)
-python train_defender_ppo.py --scenario-source procedural --iterations 50
-
-# Standalone PPO with PLR curriculum (~2.5 hours)
-python train_ppo.py --iterations 50 --episodes 4 --use-plr
 ```
 
 ### Run the 1MDB Demo

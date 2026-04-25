@@ -1,7 +1,7 @@
 # Memex: Project Context
 
 > Living document tracking the current state of the Memex OS-Agent Benchmark.
-> Last updated: 2026-04-25
+> Last updated: 2026-04-26
 
 ## What Is Memex?
 
@@ -28,15 +28,14 @@ The "OS" metaphor is an **architectural framework**, not a literal operating sys
 | **Client** | `client.py` | HTTP client with all 18 tool wrappers |
 | **Inference** | `inference.py` | ReAct agent loop with OS-mechanic awareness |
 
-### Self-Play Training Pipeline
+### Training Pipeline
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **Self-Play Orchestrator** | `self_play.py` | **Production training path.** Alternating best-response: Warmup → [Launderer → Defender] × N rounds. Population-based checkpoint management. Linear mix ratio schedule (0.3 → 0.7). Real score propagation from trainers |
-| **Defender PPO** | `train_defender_ppo.py` | Step-level PPO with GAE (γ=0.99, λ=0.95), EMA reward baseline (α=0.1), batch-wide advantage normalization. Mixed-mode training (procedural + Launderer scenarios). Entity F1, typology accuracy, decision label (TP/TN/FP/FN) tracking. Terminal reward de-duplication |
-| **Launderer PPO** | `train_launderer_ppo.py` | Single-step MDP PPO. Generates evasive scenario JSON, scored against frozen Defender. VRAM-safe full unload/reload cycle. KL auto-revert with advantage variance guard |
-| **Standalone PPO** | `train_ppo.py` | Step-level PPO with EMA baseline + batch normalization (Unsloth 4-bit + LoRA, L4-optimized, `--use-plr`) |
-| **PPO 70B** | `train_ppo_70b.py` | Multi-GPU DeepSpeed ZeRO-3 PPO for 70B on A100 cluster (proof of scalability) |
+| **🔥 GRPO Trainer** | `train_grpo.py` | **Primary training path.** TRL GRPOTrainer + Unsloth on A100. Meta-Llama-3.1-8B-Instruct with LoRA (r=16). 4 decomposed reward functions (format, investigation quality, environment execution, OS mechanics). Group size G=4, β=0.04 KL penalty. Anti-gaming via multi-signal reward design |
+| **Self-Play Orchestrator** | `self_play.py` | Alternating best-response: Warmup → [Launderer → Defender] × N rounds. Population-based checkpoint management. Linear mix ratio schedule (0.3 → 0.7) |
+| **Defender PPO** | `train_defender_ppo.py` | Step-level PPO with GAE (γ=0.99, λ=0.95), EMA reward baseline (α=0.1), batch-wide advantage normalization. Mixed-mode training (procedural + Launderer scenarios). Entity F1, typology accuracy, decision label (TP/TN/FP/FN) tracking |
+| **Launderer PPO** | `train_launderer_ppo.py` | Single-step MDP PPO. Generates evasive scenario JSON, scored against frozen Defender. VRAM-safe full unload/reload cycle |
 | **DPO** | `train_dpo.py` | Offline DPO continuous learning from user preference pairs |
 
 ### Infrastructure
@@ -139,9 +138,86 @@ The backend is invisible by design — an LLM managing RAM eviction and async qu
 
 ---
 
-## Two-Agent Self-Play Architecture
+## GRPO Training Architecture (Primary)
 
-The **production adversarial training approach** is two-agent PPO self-play.
+The **production training approach** is GRPO (Group Relative Policy Optimization) using TRL's `GRPOTrainer` + Unsloth on A100 hardware.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     GRPO Training Loop (train_grpo.py)             │
+│                                                                     │
+│  Model: Meta-Llama-3.1-8B-Instruct (Unsloth 4-bit + LoRA r=16)   │
+│  Precision: float16 (Unsloth fast-training kernels)                │
+│  Hardware: A100 (40/80 GB)                                         │
+│                                                                     │
+│  For each prompt P:                                                 │
+│    1. Generate G=4 completions from current policy π_θ             │
+│    2. Score each completion with 4 INDEPENDENT reward functions:    │
+│       R_total = R1_format + R2_investigation + R3_execution + R4_os│
+│    3. Compute advantages via within-group normalization             │
+│    4. Update π_θ with clipped PPO-style policy loss + KL penalty   │
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────┐│
+│  │ R1: Format   │  │ R2: Quality  │  │ R3: Env Exec │  │ R4: OS   ││
+│  │ Compliance   │  │ Investigation│  │ (Ground-Truth)│  │ Mechanics││
+│  │              │  │              │  │              │  │          ││
+│  │ Valid JSON?  │  │ Right tools? │  │ AMLEnviron-  │  │ write_to_││
+│  │ Known tool?  │  │ Real params? │  │ ment.step()  │  │ case_file││
+│  │ Degenerate?  │  │ Dummy guard  │  │ reward signal│  │ async,   ││
+│  │              │  │              │  │              │  │ kernel   ││
+│  │ [-1.0, +0.2] │  │ [-0.3, +0.3] │  │ [-0.5, env]  │  │ [-0.1,0.3]│
+│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────┘│
+└─────────────────────────────────────────────────────────────────────┘
+          │                                           │
+          ▼                                           ▼
+   ┌──────────────────┐                     ┌────────────────────┐
+   │ Procedural Prompt │                     │ W&B Monitoring     │
+   │ Generator         │                     │ (memex-grpo)       │
+   │ 3 typo × 3 diff   │                     │ Per-reward tracking│
+   └──────────────────┘                     └────────────────────┘
+```
+
+### Decomposed Reward Functions (Anti-Gaming Design)
+
+Multiple reward functions are passed to `GRPOTrainer`. TRL sums them for the final reward. **This makes reward hacking much harder** — gaming one signal doesn't help if the others penalize degenerate behavior.
+
+| Function | Signal | Scoring Range | Anti-Gaming Target |
+|----------|--------|---------------|--------------------|
+| **R1: Format Compliance** | Valid JSON tool call? | [-1.0, +0.2] | Prevents gibberish, repetitive text, non-JSON output |
+| **R2: Investigation Quality** | Appropriate tool selection? | [-0.3, +0.3] | Prevents always calling same tool or premature terminal actions |
+| **R3: Environment Execution** | Ground-truth env reward | [-0.5, env] | Hardest to game — requires correct tool interaction with AMLEnvironment |
+| **R4: OS Mechanics** | Uses OS-inspired tools? | [-0.1, +0.3] | Ensures agent doesn't ignore memory management, async, kernel features |
+
+### Key Design Decisions
+
+1. **Precision:** Forced `float16` compute dtype — Unsloth's fast-training kernels require homogeneous precision. BFloat16 causes `RuntimeError` in mixed-mode LoRA matmul.
+
+2. **Type-safe Rewards:** All reward functions include `if not isinstance(params, dict): params = {}` guards — the model will generate arbitrary output (strings, lists, ints as "parameters") during RL exploration. Reward functions must penalize, not crash.
+
+3. **Group Relative Advantages:** G=4 completions per prompt with within-group normalization. No critic network needed — advantages are computed relative to group peers.
+
+4. **Scenario Diversity:** 100 procedurally generated prompts spanning all 3 typologies × 3 difficulties. Unique entity IDs per episode prevent memorization.
+
+5. **Checkpoint Strategy:** Saves every 25 steps. LoRA adapters only (~50MB per checkpoint).
+
+### Observed Training Dynamics (A100)
+
+| Metric | Early Training | Mid Training | Notes |
+|--------|---------------|--------------|-------|
+| R1 (Format) | -0.15 to +0.2 | Converging | Model learns ````json` wrapper |
+| R2 (Investigation) | +0.15 to +0.25 | Stable | Consistently picks investigation tools |
+| R3 (Env Execution) | -0.23 to -0.09 | Improving | Ground-truth signal hardest to optimize |
+| R4 (OS Mechanics) | 0.00 | Beginning | Model starts using `write_to_case_file`, `request_wire_trace` |
+| KL Divergence | ~1.5e-5 | ~2.6e-5 | Extremely low — stable policy updates |
+| Step Time | ~67s | ~67s | Consistent on A100 |
+
+---
+
+## Two-Agent Self-Play Architecture (Alternative)
+
+An alternative adversarial training approach using two-agent PPO self-play.
 
 ### Architecture
 
@@ -171,24 +247,6 @@ The **production adversarial training approach** is two-agent PPO self-play.
               └──────────────────────────────┘
 ```
 
-### Key Design Decisions
-
-1. **VRAM-Safe Model Swapping:** Full unload/reload (not LoRA adapter swap) between agents. Zero shared state guaranteed. Both agents use ~6 GB loaded, ~12 GB during training. Peak VRAM never exceeds 13 GB on L4 (24 GB available).
-
-2. **Directional KL Penalty:** All trainers use `kl.clamp(min=0)` (not `kl.abs()`) — only penalizes divergence FROM reference model, does not penalize convergence TOWARD it.
-
-3. **Terminal Reward De-Duplication:** The Defender's GAE advantage computation subtracts prior step reward sum from the terminal composite score to prevent double-counting.
-
-4. **EMA Reward Baseline:** All trainers track an exponential moving average of episode returns (α=0.1) as a constant V(s) approximation. This provides variance reduction without a critic network.
-
-5. **Cross-Episode Batch Normalization:** Advantages are normalized across all episodes in a batch, not per episode. This preserves inter-episode ranking: good episodes get positive advantages, bad episodes get negative.
-
-6. **Investigation Progress Bonuses:** First-use-only bonuses for core investigation tools (+0.02 to +0.05) create a discoverable reward gradient, solving the Defender cold-start problem.
-
-7. **Scenario Injection:** `AMLEnvironment.reset()` accepts an optional `scenario` parameter, allowing Launderer-generated scenarios to be injected during Phase 3 mixed training.
-
-8. **Population Checkpointing:** `self_play.py` maintains a `CheckpointPopulation` that tracks `best_score` per agent per round, selecting the actual best checkpoint for adversarial scoring.
-
 ### Launderer Reward Shaping
 
 | Outcome | Reward | Description |
@@ -212,21 +270,45 @@ The Defender trainer tracks ground-truth metrics persisted directly in `AMLState
 
 ---
 
-## L4 Training Pipeline & VRAM Optimization
+## Training Infrastructure & VRAM Optimization
 
-Training an 8B-parameter language model on consumer GPU hardware (NVIDIA L4, ~24GB VRAM) demands aggressive memory engineering.
+Training an 8B-parameter language model requires aggressive memory engineering. The project supports two hardware targets.
+
+### Hardware Targets
+
+| Target | GPU | VRAM | Primary Use |
+|--------|-----|------|-------------|
+| **A100** | NVIDIA A100 | 40/80 GB | GRPO training (production) |
+| **L4** | NVIDIA L4 | 24 GB | PPO self-play (alternative) |
 
 ### 1. Unsloth 4-bit Quantization + LoRA
 
-The base model (Meta-Llama-3.1-8B-Instruct) is loaded via Unsloth's `FastLanguageModel` in 4-bit NF4 quantization (~5.5GB VRAM). Only the LoRA adapter layers (rank 16, alpha 32) are trainable — roughly 0.92% of total parameters (~42M trainable / 4.58B total).
+The base model (Meta-Llama-3.1-8B-Instruct) is loaded via Unsloth's `FastLanguageModel` in 4-bit NF4 quantization (~5.5GB VRAM). Only the LoRA adapter layers (rank 16, alpha 16) are trainable — roughly 0.92% of total parameters (~42M trainable / 4.58B total).
 
-### 2. The `disable_adapter()` Trick
+### 2. The `disable_adapter()` Trick (PPO)
 
 Standard PPO requires a frozen reference model to compute the KL divergence penalty. Naively, this means loading two copies of the model (~10GB each) — impossible on an L4.
 
 Our solution: **one model, two modes.** During the forward pass, we call `model.disable_adapter()` to temporarily bypass the LoRA layers, producing reference logits from the frozen base weights. Then `model.enable_adapter()` restores the trainable policy. This yields an exact KL penalty with zero additional VRAM overhead.
 
-### 3. VRAM Budget (L4 = 24 GB)
+For GRPO, TRL handles the reference model internally via `GRPOTrainer`.
+
+### 3. VRAM Budget
+
+**A100 (GRPO — Primary):**
+
+| Component | VRAM |
+|-----------|------|
+| Base 8B 4-bit (NF4) | ~5.5 GB |
+| LoRA adapters (r=16) | ~0.3 GB |
+| KV cache (4096 seq) | ~4.0 GB |
+| G=4 completions buffer | ~3.0 GB |
+| Optimizer (AdamW fp32) | ~1.2 GB |
+| Activations (gradient checkpoint) | ~3-6 GB |
+| **Total** | **~17-20 GB** |
+| **Headroom (A100-40)** | **~20 GB ✓** |
+
+**L4 (PPO Self-Play — Alternative):**
 
 | Component | VRAM |
 |-----------|------|
@@ -240,24 +322,26 @@ Our solution: **one model, two modes.** During the forward pass, we call `model.
 
 > Only one model is loaded at a time during self-play. The Launderer and Defender never coexist in VRAM.
 
-### 4. PPO Stability Engineering
+### 4. Stability Engineering
 
-Both trainers include **14 production-grade safety features:**
+The training pipeline includes production-grade safety features across both GRPO and PPO:
 
+**GRPO-specific:**
+- **Decomposed reward functions:** 4 independent reward signals summed by TRL — prevents single-dimension reward hacking
+- **Type-safe reward guards:** `isinstance(params, dict)` checks in all reward functions — model exploration generates arbitrary types during RL
+- **Degenerate output detection:** >80% repeated tokens → -1.0 penalty (R1)
+- **Format compliance scoring:** Separate reward dimension for JSON structure validity
+
+**PPO-specific:**
 - **Mean per-token KL:** `.mean()` not `.sum()` — scale-invariant KL divergence
 - **Directional KL:** `kl.clamp(min=0)` — only penalizes divergence from reference
 - **Entropy bonus:** `- entropy_coef × H(π)` prevents mode collapse
 - **Ratio clamping:** `clamp(log_ratio, -10, 10)` before `exp()` — prevents inf/NaN
 - **Return clipping:** `clip(returns, -2.0, +2.0)` — bounds gradient signals
-- **Empty response guard:** Dummy EOS prevents NaN from `.mean()` on empty tensor
-- **Degenerate response detection:** >80% repeated tokens → -0.15 penalty
-- **Fault-tolerant `env.step()`:** try/except → -0.10 penalty for malformed actions
-- **Type-safe `parse_action()`:** Forces `params` to dict, catches TypeError/ValueError
-- **KL early stopping:** Break PPO epochs if |KL| > 15
-- **Terminal reward de-duplication:** Subtract prior step rewards from terminal composite to prevent GAE double-counting
-- **Auto-Revert ("Time Machine"):** Entropy heartbeat + checkpoint reload with hyperparameter bump
-- **🆕 Cross-episode batch normalization:** Advantages normalized across all episodes in a batch, preserving inter-episode ranking
-- **🆕 EMA reward baseline:** Exponential moving average (α=0.1) of episode returns as constant V(s) approximation for variance reduction
+- **Terminal reward de-duplication:** Subtract prior step rewards from terminal composite
+- **Auto-Revert ("Time Machine"):** Entropy heartbeat + checkpoint reload
+- **Cross-episode batch normalization:** Advantages normalized across all episodes
+- **EMA reward baseline:** Exponential moving average (α=0.1) as constant V(s)
 
 ### Research Context
 
@@ -266,9 +350,9 @@ Our training pipeline aligns with several 2025-2026 RL research directions:
 | Technique | Paper/Method | How Memex Uses It |
 |-----------|-------------|-------------------|
 | **Turn-level dense rewards** | TIPS (Xie et al., ICLR 2026) | `grade_step()` provides per-tool-call shaping for OS mechanics |
-| **Value-free advantage estimation** | LOOP (2025) | EMA baseline as constant V(s) approximation; future work: K=2 leave-one-out baseline |
+| **Value-free advantage estimation** | LOOP (2025) / GRPO | EMA baseline (PPO) + group-relative advantages (GRPO); no critic network |
 | **Adaptive environment generation** | EnvGen (2025) | PLR engine + Launderer self-play dynamically adjust scenario difficulty |
-| **Anti-gaming reward design** | Incentive audit best practices | Hard caps, closed action sets, formal lazy-policy analysis |
+| **Anti-gaming reward design** | Incentive audit best practices | Hard caps, closed action sets, formal lazy-policy analysis, decomposed reward functions (GRPO) |
 | **Potential-based shaping** | Ng et al. (1999) | Per-step OS rewards are potential-based: they reward state improvement without altering the optimal terminal policy |
 
 ### 5. DPO Continuous Learning Pipeline
@@ -287,7 +371,7 @@ Memex uses a **dual-data architecture** to satisfy two orthogonal goals: RL gene
 
 ### The Gym — `procedural_generator.py` + `self_play.py`
 
-The training environment. `procedural_generator.py` creates mathematically fresh POMDP graphs. `self_play.py` adds adversarial scenarios from the Launderer. Entity IDs are randomly generated — no memorization possible. This forces the PPO agent to learn **transferable OS mechanics**.
+The training environment. `procedural_generator.py` creates mathematically fresh POMDP graphs. Entity IDs are randomly generated — no memorization possible. In GRPO mode, 100 prompts are generated across all 3 typologies × 3 difficulties. In self-play mode, `self_play.py` adds adversarial scenarios from the Launderer. This forces the agent to learn **transferable OS mechanics**.
 
 ### The Stage — `demo_eval.py`
 
@@ -321,13 +405,20 @@ Both modes capture AGUI state for frontend replay.
 
 ## Recent Changes
 
+### 2026-04-26
+
+1. **🔥 GRPO training pipeline (`train_grpo.py`):** New primary training path using TRL GRPOTrainer + Unsloth on A100. 4 decomposed reward functions (format compliance, investigation quality, environment execution, OS mechanics) for anti-gaming. Meta-Llama-3.1-8B-Instruct with LoRA r=16, G=4 group size, β=0.04 KL penalty.
+2. **Precision engineering:** Forced float16 compute dtype across all Unsloth operations. Resolved `RuntimeError` caused by mixed Half/BFloat16 tensors in Unsloth's fast-training kernels.
+3. **Type-safe reward functions:** Added `isinstance(params, dict)` guards to all 4 reward functions. During RL exploration, the model generates arbitrary types (strings, lists, ints) as `"parameters"` — reward functions now penalize instead of crashing.
+4. **W&B integration:** Training metrics tracked in `memex-grpo` project with per-reward-function monitoring.
+5. **Documentation sync:** Updated `TRAINING.md`, `openenv.yaml`, and `PROJECT_CONTEXT.md` to reflect GRPO as primary path.
+
 ### 2026-04-25
 
 1. **PPO training stability fixes:** Cross-episode batch advantage normalization (replaces per-episode), EMA reward baseline (α=0.1) as constant V(s) for variance reduction, investigation progress bonuses (first-use per tool type), entity regex extended for Launderer IDs.
 2. **PPO signal fixes:** KL metric correction (`abs(kl)` for logging), terminal reward de-duplication, Launderer diversity tuning (temperature, top_p, repetition_penalty), reward noise injection for zero-variance episodes, response text truncation fix.
-3. **Codebase cleanup:** Removed deprecated `train_grpo.py`, `train_adversary.py`, and stale artifacts. Updated all documentation.
-4. **Final audit fixes:** P1-1 (orchestrator score propagation), P2-2 (KL direction: `kl.abs()` → `kl.clamp(min=0)` in all trainers), grader `false_positive` typology alias for clean-scenario TN detection.
-5. **Self-play dry-run validated on Colab L4:** Full 3-round orchestrator dry-run completes end-to-end. VRAM peak ~12 GB.
+3. **Final audit fixes:** P1-1 (orchestrator score propagation), P2-2 (KL direction: `kl.abs()` → `kl.clamp(min=0)` in all trainers), grader `false_positive` typology alias for clean-scenario TN detection.
+4. **Self-play dry-run validated on Colab L4:** Full 3-round orchestrator dry-run completes end-to-end. VRAM peak ~12 GB.
 
 ### 2026-04-24
 
@@ -353,5 +444,5 @@ Both modes capture AGUI state for frontend replay.
 
 1. **Codebase sanitization:** Removed duplicate types, updated `client.py`, rewrote README.
 2. **PPO trainer:** Custom step-level PPO with Unsloth 4-bit + LoRA, L4-optimized.
-3. **70B scaling pivot:** `train_ppo_70b.py` with DeepSpeed ZeRO-3.
+3. **70B scaling pivot:** `train_ppo_70b.py` with DeepSpeed ZeRO-3 (later removed — superseded by GRPO on A100).
 4. **Demo system:** 1MDB-inspired scenario with AGUI replay capture.
