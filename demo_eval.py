@@ -411,8 +411,8 @@ def run_llm_demo(model_path: str, output_dir: str) -> None:
         tokenizer.pad_token = tokenizer.eos_token
     FastLanguageModel.for_inference(model)
 
-    # Import prompt formatting and parsing from train_ppo
-    from train_ppo import format_prompt, parse_action
+    # Import prompt formatting and parsing from train_grpo (primary training script)
+    from train_grpo import DEFENDER_SYSTEM_PROMPT, parse_tool_call
 
     scenario = build_1mdb_scenario()
     env = DemoEnvironment(scenario)
@@ -422,11 +422,35 @@ def run_llm_demo(model_path: str, output_dir: str) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     for step_num in range(1, 26):
-        ram = list(env._sm.ram_queue) if env._sm else []
+        ram = list(env._sm.ram_contents) if env._sm else []
         disk = env._sm.disk_contents if env._sm else []
         kernel = env._sm.kernel_directives if env._sm else []
 
-        prompt = format_prompt(obs, step_num, kernel, disk, ram)
+        # Build prompt using chat template
+        alert = obs.tool_result.get("alert", {}) if step_num == 1 else {}
+        if step_num == 1:
+            user_text = (
+                f"New AML Alert Assigned:\n"
+                f"- Alert ID: {alert.get('alert_id', 'N/A')}\n"
+                f"- Summary: {alert.get('summary', 'No summary')}\n"
+                f"- Customer: {alert.get('customer_id', 'N/A')}\n\n"
+                f"Available tools: {obs.available_tools}\n\n"
+                f"Investigate this alert. Use the available tools to gather evidence, "
+                f"then make your decision: file_sar or close_alert."
+            )
+        else:
+            user_text = (
+                f"Observation:\n{obs.message}\n"
+                f"Tool result: {obs.tool_result}\n\n"
+                f"Memory: {ram}\nDisk: {disk}\nKernel: {kernel}\n\n"
+                f"Action JSON:"
+            )
+
+        messages = [
+            {"role": "system", "content": DEFENDER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_text},
+        ]
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1856).to(device)
 
         with torch.no_grad():
@@ -436,7 +460,15 @@ def run_llm_demo(model_path: str, output_dir: str) -> None:
                 pad_token_id=tokenizer.eos_token_id,
             )
         response = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        tool, params = parse_action(response)
+
+        parsed = parse_tool_call(response)
+        if parsed:
+            tool = parsed.get("tool", "review_alert")
+            params = parsed.get("parameters", {})
+        else:
+            tool = "review_alert"
+            params = {}
+
         reasoning = ""
         try:
             d = json.loads(response.strip())

@@ -332,7 +332,7 @@ def run_scenario(eval_scenario: EvalScenario, verbose: bool = True, model: Any =
             from train_grpo import DEFENDER_SYSTEM_PROMPT, parse_tool_call
             
             for step_idx in range(1, 26):
-                ram = list(env._sm.ram_queue) if env._sm else []
+                ram = list(env._sm.ram_contents) if env._sm else []
                 disk = env._sm.disk_contents if env._sm else []
                 kernel = env._sm.kernel_directives if env._sm else []
 
