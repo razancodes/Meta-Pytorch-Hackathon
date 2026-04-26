@@ -18,6 +18,9 @@ node_modules/
 frontend/
 # NOTE: static_frontend/ is NOT excluded — it's served at /web
 
+# Archive (legacy scripts, not needed for runtime)
+archive/
+
 # Training artifacts
 checkpoints/
 checkpoints_70b/

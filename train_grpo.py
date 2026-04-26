@@ -36,9 +36,7 @@ from dataclasses import dataclass, field
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-# ---------------------------------------------------------------------------
-# Suppress known warnings from transformers/Unsloth internals.
-# These are library-internal deprecations — not our code, not fixable by us.
+# Suppress known library-internal deprecation warnings
 # ---------------------------------------------------------------------------
 warnings.filterwarnings("ignore", message=".*attention mask API.*AttentionMaskConverter.*")
 warnings.filterwarnings("ignore", message=".*warmup_ratio is deprecated.*")
@@ -46,17 +44,14 @@ warnings.filterwarnings("ignore", message=".*use_return_dict.*is deprecated.*")
 warnings.filterwarnings("ignore", message=".*Passing.*generation_config.*together with.*")
 warnings.filterwarnings("ignore", message=".*Both.*max_new_tokens.*and.*max_length.*")
 
-# ---------------------------------------------------------------------------
 # Path bootstrap
-# ---------------------------------------------------------------------------
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 # Configuration
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 
 @dataclass
 class GRPOTrainConfig:
@@ -107,9 +102,9 @@ class GRPOTrainConfig:
     env_base_url: str = ""          # If set, use remote HF Space; else local
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 # System Prompt
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 
 DEFENDER_SYSTEM_PROMPT = """You are an expert AML (Anti-Money Laundering) investigator operating within the Memex OS-Agent environment.
 
@@ -157,9 +152,9 @@ You have 18 tools organized in three categories:
 Respond with a JSON tool call: {"tool": "<tool_name>", "parameters": {...}}"""
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 # Dataset Generation
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 
 def generate_prompt_dataset(num_prompts: int, difficulties: List[str]) -> list:
     """Generate AML investigation prompts from the procedural scenario engine.
@@ -212,9 +207,9 @@ def generate_prompt_dataset(num_prompts: int, difficulties: List[str]) -> list:
     return prompts
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 # Tool Call Parsing
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 
 def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
     """Extract a JSON tool call from model completion text.
@@ -342,16 +337,11 @@ _OS_TOOLS = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Decomposed Reward Functions (Anti-Gaming Design)
-#
-# We pass MULTIPLE reward functions to GRPOTrainer. Each one scores a
-# different dimension. TRL sums them for the final reward. This makes
-# reward hacking much harder — gaming one signal doesn't help if the
-# others penalize the degenerate behavior.
+# ═══════════════════════════
+# Decomposed Reward Functions
 #
 # R_total = R_format + R_investigation + R_execution + R_os_mechanics
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 
 def reward_format_compliance(completions, **kwargs) -> List[float]:
     """R1: Format Compliance — Is the output a valid, well-formed tool call?
@@ -598,10 +588,9 @@ def reward_os_mechanics(completions, **kwargs) -> List[float]:
 
     return rewards
 
-
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 # Training
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 
 def train(cfg: GRPOTrainConfig) -> None:
     """Main GRPO training loop using TRL + Unsloth."""
@@ -627,20 +616,14 @@ def train(cfg: GRPOTrainConfig) -> None:
         cfg.save_steps = 999
         cfg.max_completion_length = 512
 
-    # ── 1. Load Model with Unsloth ──────────────────────────────────────
+    # ── 1. Load Model ────────────────────────────────────────────────
     print("▸ Loading model with Unsloth (4-bit quantization)...")
     from unsloth import FastLanguageModel
 
     import torch
 
-    # IMPORTANT: Unsloth's 4-bit quantization (load_in_4bit=True) internally
-    # uses float16 as the BNB compute dtype, regardless of what we pass here.
-    # When we try to use bfloat16, the LoRA adapters are created in bf16 but
-    # the dequantized base weights remain fp16, causing:
-    #   RuntimeError: self and mat2 must have the same dtype (Half vs BFloat16)
-    # inside unsloth/kernels/fast_lora.py → matmul_lora.
-    #
-    # Fix: Always use float16 with Unsloth 4-bit. A100 handles fp16 natively.
+    # Unsloth 4-bit uses fp16 as BNB compute dtype internally.
+    # Using bf16 causes RuntimeError: Half vs BFloat16 inside LoRA kernels.
     compute_dtype = torch.float16
     print(f"  Compute dtype: {compute_dtype}")
 
@@ -671,24 +654,17 @@ def train(cfg: GRPOTrainConfig) -> None:
     print(f"  ✓ Model loaded. Trainable params: "
           f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
-    # ── 2. Generate Prompt Dataset ──────────────────────────────────────
+    # ── 2. Generate Prompt Dataset ──────────────────────────────────
     print(f"\n▸ Generating {cfg.num_prompts} scenario prompts...")
     prompt_data = generate_prompt_dataset(cfg.num_prompts, cfg.difficulties)
-
     from datasets import Dataset
     dataset = Dataset.from_list(prompt_data)
-    print(f"  ✓ Dataset: {len(dataset)} prompts")
 
-    # ── 3. Create Decomposed Reward Functions ───────────────────────────
-    # We use MULTIPLE reward functions to prevent reward hacking.
-    # Each scores a different dimension. TRL sums them for the total.
-    # R_total = R_format + R_investigation + R_execution + R_os_mechanics
-    print("\n▸ Setting up decomposed reward functions (anti-gaming design)...")
     reward_fns = [
-        reward_format_compliance,        # R1: Valid JSON tool call?
-        reward_investigation_quality,    # R2: Appropriate tool choice?
-        reward_environment_execution,    # R3: Ground-truth env reward
-        reward_os_mechanics,             # R4: OS feature utilization?
+        reward_format_compliance,
+        reward_investigation_quality,
+        reward_environment_execution,
+        reward_os_mechanics,
     ]
     print(f"  ✓ {len(reward_fns)} reward functions registered:")
     print("    R1: Format Compliance (prevents gibberish)")
@@ -838,9 +814,9 @@ def _plot_training_curves(trainer, output_dir: str) -> None:
     print(f"  ✓ Training curves saved to {plot_path}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 # CLI
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════
 
 def main():
     p = argparse.ArgumentParser(

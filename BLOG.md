@@ -99,12 +99,12 @@ We wanted to make sure exploiting rewards is as hard as possible.
 | Model | `unsloth/Meta-Llama-3.1-8B-Instruct` (4-bit NF4) |
 | LoRA rank | 16 (all attention + MLP projections) |
 | GRPO group size | G=4 completions per prompt |
-| Learning rate | 2e-5 (cosine decay) |
-| KL penalty (β) | 0.01 |
-| Prompts | 500 unique procedural scenarios |
-| Epochs | 3 |
+| Learning rate | 5e-6 (cosine decay) |
+| KL penalty (β) | 0.04 |
+| Prompts | 250 unique procedural scenarios |
+| Epochs | 2 |
 | Gradient accumulation | 8 steps |
-| Max completion length | 1024 tokens |
+| Max completion length | 2048 tokens |
 | Hardware (Colab Training) | NVIDIA A100 (40GB) |
 
 ---

@@ -163,15 +163,16 @@ wandb.login()
 
 !python train_grpo.py \
     --model unsloth/Meta-Llama-3.1-8B-Instruct \
-    --num-prompts 500 \
+    --num-prompts 250 \
     --num-generations 4 \
-    --lr 2e-5 \
-    --beta 0.01 \
-    --epochs 3 \
+    --lr 5e-6 \
+    --beta 0.04 \
+    --epochs 2 \
     --batch-size 1 \
     --grad-accum 8 \
+    --max-completion-length 2048 \
     --wandb-project memex-grpo \
-    --output-dir checkpoints/defender-grpo
+    --output-dir checkpoints/defender-grpo-v2
 ```
 
 ```python
@@ -247,18 +248,18 @@ print("✅ Model pushed to HuggingFace Hub!")
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--model` | `unsloth/Meta-Llama-3.1-8B-Instruct` | Base model |
-| `--num-prompts` | `500` | Unique scenario prompts |
+| `--num-prompts` | `250` | Unique scenario prompts |
 | `--num-generations` | `4` | G — group size for GRPO |
-| `--lr` | `2e-5` | Learning rate |
-| `--beta` | `0.01` | KL penalty coefficient |
+| `--lr` | `5e-6` | Learning rate |
+| `--beta` | `0.04` | KL penalty coefficient |
 | `--loss-type` | `grpo` | Loss variant: `grpo`, `dapo`, `dr_grpo` |
 | `--lora-r` | `16` | LoRA rank |
-| `--epochs` | `3` | Training epochs |
+| `--epochs` | `2` | Training epochs |
 | `--batch-size` | `1` | Per-device train batch size |
 | `--grad-accum` | `8` | Gradient accumulation steps |
-| `--max-completion-length` | `1024` | Max tokens per completion |
+| `--max-completion-length` | `2048` | Max tokens per completion |
 | `--wandb-project` | `memex-grpo` | WandB project name |
-| `--output-dir` | `checkpoints/defender-grpo` | Output directory |
+| `--output-dir` | `checkpoints/defender-grpo-v2` | Output directory |
 | `--dry-run` | off | Quick test: 4 prompts, no WandB |
 
 ---
@@ -349,11 +350,11 @@ Multi-step: scores **all unique** OS tool calls (deduplicated to prevent reward 
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------| 
-| `lr` | `2e-5` | Learning rate |
-| `beta` | `0.01` | KL penalty weight against frozen base |
+| `lr` | `5e-6` | Learning rate |
+| `beta` | `0.04` | KL penalty weight against frozen base |
 | `num_generations` | `4` | G — group size (more = better advantage estimation) |
 | `loss_type` | `grpo` | Standard GRPO; `dapo` for token-level normalization |
-| `max_completion_length` | `1024` | Max tokens per completion |
+| `max_completion_length` | `2048` | Max tokens per completion |
 | `max_seq_length` | `4096` | Max total sequence length |
 | `max_grad_norm` | `1.0` | Gradient clipping |
 | `warmup_steps` | `20` | LR warmup (fixed steps, not ratio) |
@@ -361,11 +362,13 @@ Multi-step: scores **all unique** OS tool calls (deduplicated to prevent reward 
 | `scale_rewards` | `True` | Normalize rewards across batch |
 | `fp16` | `True` | Float16 training (required by Unsloth 4-bit) |
 | `gradient_accumulation_steps` | `8` | 8 micro-batches per optimizer step |
-| `num_train_epochs` | `3` | Training epochs over the prompt dataset |
+| `num_train_epochs` | `2` | Training epochs over the prompt dataset |
 
 ---
 
 ## WandB Monitoring
+
+**Dashboard:** [wandb.ai/n0s0ktesting-testing-labs/memex-grpo](https://wandb.ai/n0s0ktesting-testing-labs/memex-grpo)
 
 | Metric | Healthy Range | What to Watch |
 |--------|---------------|---------------|
@@ -416,18 +419,32 @@ After the multi-step scoring overhaul, reward variance is confirmed healthy:
 
 ---
 
-## Legacy: Self-Play PPO (Archived)
+## Evaluation
 
-> The PPO-based self-play pipeline is preserved for ablation comparison. GRPO is the recommended training path.
+After training, benchmark your checkpoint across all 6 typologies × 3 difficulties:
 
-```python
-# Self-play dry-run (legacy PPO — for reference only)
-# !python self_play.py --dry-run
-# !python train_defender_ppo.py --dry-run --scenario-source procedural
-# !python train_launderer_ppo.py --dry-run
+```bash
+# Full evaluation (6 scenarios)
+python eval_harness.py --checkpoint checkpoints/defender-grpo-v2
+
+# Single scenario
+python eval_harness.py --checkpoint checkpoints/defender-grpo-v2 --scenarios 1mdb_layering
 ```
 
-**Self-Play CLI Reference (PPO):**
+---
+
+## Alternative Approaches (Archived)
+
+> The following pipelines are preserved in `archive/` for ablation comparison. **GRPO is the recommended training path.**
+
+### Self-Play PPO
+
+```python
+# Self-play dry-run (legacy PPO)
+# python self_play.py --dry-run
+# python archive/train_defender_ppo.py --dry-run --scenario-source procedural
+# python archive/train_launderer_ppo.py --dry-run
+```
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -438,108 +455,21 @@ After the multi-step scoring overhaul, reward variance is confirmed healthy:
 | `--wandb-project` | `memex-selfplay` | WandB project name |
 | `--dry-run` | off | 2 iters × 1 ep per phase |
 
----
+### DPO Continuous Learning
 
-## Hardware Reference
+```bash
+# Batch DPO training (offline, from user corrections)
+python archive/train_dpo.py --base-model checkpoints/defender-grpo-v2 --db frontend/prisma/dev.db
 
-| Config | GPU | VRAM | Script | Est. Time |
-|--------|-----|------|--------|-----------|
-| Colab Pro | A100 | 40 GB | `train_grpo.py` | ~1.5-2 hrs |
-| Colab Pro | L4 | 24 GB | `train_grpo.py` | ~3-5 hrs |
-| HF Jobs | L4 | 24 GB | `train_grpo.py` | ~3-5 hrs |
-| HF Jobs | T4 | 16 GB | `train_grpo.py` | ~5-7 hrs |
+# Hot-swap adapters into running server
+python archive/hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct --adapter checkpoints/dpo-latest
+```
 
----
-
-## File Reference
+### Archived File Reference
 
 | File | Purpose |
 |------|---------|
-| **GRPO Training (Primary)** | |
-| `train_grpo.py` | **★ Defender GRPO training** (TRL GRPOTrainer + Unsloth) |
-| **Self-Play Pipeline (Legacy)** | |
-| `self_play.py` | Alternating best-response orchestrator (PPO-based) |
-| `train_defender_ppo.py` | Defender PPO with GAE, EMA baseline, batch normalization |
-| `train_launderer_ppo.py` | Launderer single-step PPO (generates evasive scenarios) |
-| `server/launderer_env.py` | One-step MDP for Launderer (validates JSON, runs frozen Defender) |
-| **Standalone Training (Legacy)** | |
-| `train_dpo.py` | Offline DPO trainer (continuous learning from user corrections) |
-| **Infrastructure** | |
-| `hotswap.py` | Zero-downtime LoRA adapter hot-swap utility |
-| `demo_eval.py` | 1MDB demo with AGUI replay capture |
-| `eval_harness.py` | Checkpoint benchmarking across typology/difficulty grid |
-| `curriculum/plr_engine.py` | PLR buffer: regret-weighted scenario sampling |
-| `curriculum/oracle.py` | Proxy regret oracle (`1.0 - protagonist_score`) |
-| `server/aml_environment.py` | Core environment (18 tools + OS mechanics) |
-| `scenarios/procedural_generator.py` | Procedural POMDP scenario builder |
-| `graders/grader.py` | Dense reward engine (per-step + terminal + investigation bonuses) |
-| `state_manager.py` | OS mechanics (RAM, Disk, Async Queue, Kernel) |
-| `models.py` | Pydantic type definitions |
-| `tests/test_smoke.py` | Environment verification (8/8 tests) |
-
----
-
-## Continuous Learning (DPO Pipeline)
-
-### Setup (Frontend)
-
-```bash
-cd frontend
-npm install @prisma/client prisma
-npx prisma init --datasource-provider sqlite
-npx prisma migrate dev --name init
-```
-
-### Workflow
-
-1. **User corrects agent output** → POST to `/api/preferences` with `originalPrompt`, `rejectedResponse`, `chosenResponse`
-2. **Batch DPO training** (run offline when enough pairs accumulate):
-   ```bash
-   python train_dpo.py --base-model checkpoints/defender-grpo --db frontend/prisma/dev.db
-   ```
-3. **Hot-swap adapters** into running inference server:
-   ```bash
-   python hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct --adapter checkpoints/dpo-latest
-   ```
-
-### DPO Hyperparameters
-
-| Param | Value | Notes |
-|-------|-------|-------|
-| `beta` | `0.1` | DPO temperature (lower = more aggressive preference) |
-| `lr` | `1e-6` | Conservative to avoid catastrophic forgetting |
-| `epochs` | `3` | Per-batch passes |
-| `min_pairs` | `5` | Minimum pairs to trigger training |
-
----
-
-## Research Context
-
-Our training pipeline aligns with several 2025-2026 RL research directions:
-
-| Technique | Paper/Method | How Memex Uses It |
-|-----------|-------------|-------------------|
-| **GRPO** | DeepSeekMath (Shao et al., 2024) | Group-relative advantage estimation — no critic, G=4 completions per prompt |
-| **Multi-step scoring** | OpenEnv best practices | `parse_all_tool_calls()` scores full investigation trajectories, not single steps |
-| **Turn-level dense rewards** | TIPS (Xie et al., ICLR 2026) | `grade_step()` provides per-tool-call shaping for OS mechanics |
-| **Deterministic env replay** | Environment consistency | Scenario seeding ensures all G completions face identical environment state |
-| **Adaptive environment generation** | EnvGen (2025) | PLR engine + Launderer self-play dynamically adjust scenario difficulty |
-| **Anti-gaming reward design** | Incentive audit best practices | 4 decomposed rewards, hard caps, closed action sets, deduplication |
-| **Potential-based shaping** | Ng et al. (1999) | Per-step OS rewards are potential-based: they reward state improvement without altering the optimal terminal policy |
-| **Unsloth quantization** | 4-bit NF4 + LoRA | 2× faster training, 70% less VRAM |
-
----
-
-## Bug Fixes Applied (v2 → v3)
-
-Critical fixes that transformed the pipeline from a dead (zero-gradient) state to active learning:
-
-| # | Bug | Impact | Fix |
-|---|-----|--------|-----|
-| 1 | Single-step parsing (`parse_tool_call`) used for R2/R3/R4 | Only first tool call scored; OS tools in later calls invisible | `parse_all_tool_calls()` with `re.finditer` |
-| 2 | Scenario mismatch in R3 | Each completion evaluated on a different random scenario | Deterministic `scenario_seed` stored in dataset, replayed in R3 |
-| 3 | R3 single-step execution | Only first tool call executed against env | Full multi-step `env.step()` loop over all parsed calls |
-| 4 | Terminal SAR reward = 0.5 in R2 | Encouraged premature terminal actions | Reduced to 0.1 to discourage early termination |
-| 5 | Import inside hot loop | `from server.aml_environment import AMLEnvironment` inside reward fn per-call | Moved to function scope (imported once per batch) |
-| 6 | Silent exceptions in R3 | `except: pass` swallowed all env errors | `except Exception as e: print(...)` with -0.3 fallback |
-| 7 | R4 double-counting | Same OS tool counted multiple times | `seen_tools` deduplication set |
+| `archive/train_defender_ppo.py` | Defender PPO with GAE, EMA baseline, batch normalization |
+| `archive/train_launderer_ppo.py` | Launderer single-step PPO (generates evasive scenarios) |
+| `archive/train_dpo.py` | Offline DPO trainer (continuous learning from user corrections) |
+| `archive/hotswap.py` | Zero-downtime LoRA adapter hot-swap utility |
