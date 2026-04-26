@@ -23,7 +23,7 @@ app_port: 7860
 
 *Built for the Meta / Hugging Face OpenEnv Hackathon*
 
-[Live Environment](https://huggingface.co/spaces/MuazTPM/aml_investigation_env) · [Blog Post](https://huggingface.co/spaces/MuazTPM/aml_investigation_env/blob/main/BLOG.md) · [Colab Notebook](https://colab.research.google.com/drive/1ixUxVht90sHGsT-4sSg4a3oHPm2q4nmj?usp=sharing) · [Training Guide](TRAINING.md) · [WandB Curves](https://wandb.ai/n0s0ktesting-testing-labs/memex-grpo)
+[Live Environment](https://huggingface.co/spaces/MuazTPM/aml_investigation_env) · [Blog Post](https://huggingface.co/spaces/MuazTPM/aml_investigation_env/blob/main/BLOG.md) · [Colab Notebook](https://colab.research.google.com/drive/1ixUxVht90sHGsT-4sSg4a3oHPm2q4nmj?usp=sharing) · [Training Guide](TRAINING.md)
 
 </div>
 
