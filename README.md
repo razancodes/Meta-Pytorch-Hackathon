@@ -129,7 +129,7 @@ See [TRAINING.md](TRAINING.md) for copy-paste Colab cells, full CLI reference, a
 
 ## Architecture
 
-![Memex System Architecture](assets/MemexArchitecture.svg)
+![Memex System Architecture](assets/MemexArchitecture.jpg)
 
 ---
 
