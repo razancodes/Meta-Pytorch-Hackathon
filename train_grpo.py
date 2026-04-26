@@ -33,6 +33,7 @@ import sys
 import time
 import warnings
 from dataclasses import dataclass, field
+from collections import Counter
 from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
@@ -171,6 +172,11 @@ def generate_prompt_dataset(num_prompts: int, difficulties: List[str]) -> list:
     prompts = []
     for i in range(num_prompts):
         try:
+            # Deterministic seed per prompt — ensures R3 can replay the
+            # exact same scenario during reward evaluation (Bug Fix #3/#6)
+            scenario_seed = i * 7919 + 42
+            random.seed(scenario_seed)
+
             env = AMLEnvironment()
             task_id = difficulties[i % len(difficulties)]
             obs = env.reset(task_id=task_id)
@@ -196,6 +202,7 @@ def generate_prompt_dataset(num_prompts: int, difficulties: List[str]) -> list:
                     {"role": "user", "content": alert_text},
                 ],
                 "task_id": task_id,
+                "scenario_seed": scenario_seed,
             })
         except Exception as e:
             print(f"  ⚠ Failed to generate prompt {i}: {e}")
@@ -249,6 +256,53 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
         pass
 
     return None
+
+
+def parse_all_tool_calls(text: str) -> List[Dict[str, Any]]:
+    """Extract ALL JSON tool calls from model completion text.
+
+    Unlike parse_tool_call which returns only the first match,
+    this returns every valid tool call found in the text.
+    Used by R2, R3, R4 for multi-step scoring.
+    """
+    if not text or not isinstance(text, str):
+        return []
+
+    calls = []
+
+    # Pattern 1: ```json {...} ``` blocks (most common in model output)
+    for match in re.finditer(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL):
+        try:
+            data = json.loads(match.group(1))
+            if "tool" in data:
+                calls.append(data)
+        except json.JSONDecodeError:
+            pass
+
+    if calls:
+        return calls
+
+    # Pattern 2: Raw JSON objects with "tool" key
+    for match in re.finditer(r'\{[^{}]*"tool"\s*:\s*"[^"]+?"[^{}]*\}', text):
+        try:
+            data = json.loads(match.group(0))
+            if "tool" in data:
+                calls.append(data)
+        except json.JSONDecodeError:
+            pass
+
+    if calls:
+        return calls
+
+    # Pattern 3: Try entire text as a single JSON tool call
+    try:
+        data = json.loads(text.strip())
+        if isinstance(data, dict) and "tool" in data:
+            calls.append(data)
+    except json.JSONDecodeError:
+        pass
+
+    return calls
 
 
 def _extract_completion_text(completion) -> str:
@@ -323,7 +377,6 @@ def reward_format_compliance(completions, **kwargs) -> List[float]:
         # Detect degenerate repetition (> 80% of tokens are the same)
         tokens = text.split()
         if tokens and len(tokens) > 5:
-            from collections import Counter
             most_common_count = Counter(tokens).most_common(1)[0][1]
             if most_common_count / len(tokens) > 0.8:
                 rewards.append(-2.0)
@@ -352,61 +405,82 @@ def reward_investigation_quality(completions, **kwargs) -> List[float]:
     Anti-gaming target: Prevents the agent from always calling the same
     tool or only calling terminal actions without investigating.
 
-    Scoring:
-        +0.3   Used an investigation tool (evidence gathering)
-        +0.2   Used an OS-mechanic tool (memory management/async/kernel)
-        +0.1   Used a terminal tool (file_sar/close_alert) — lower because
+    Multi-step scoring: Evaluates ALL tool calls in the completion
+    to reward diverse, thorough investigation strategies.
+
+    Scoring (per unique tool category used):
+        +0.3   Used investigation tools (evidence gathering)
+        +0.2   Used OS-mechanic tools (memory management/async/kernel)
+        +0.1   Used terminal tools (file_sar/close_alert) — lower because
                we don't want premature terminal actions
-        -0.3   Provided parameters that are clearly empty/dummy
-         0.0   No valid tool call
+        -0.3   All tool calls have clearly empty/dummy parameters
+         0.0   No valid tool calls found
     """
+    tools_needing_params = {
+        "get_customer_profile", "query_transactions", "check_watchlist",
+        "trace_network", "check_source_of_funds", "write_to_case_file",
+        "file_sar", "check_device_overlap",
+    }
+
     rewards = []
     for completion in completions:
         text = _extract_completion_text(completion)
-        tool_call = parse_tool_call(text)
+        all_calls = parse_all_tool_calls(text)
 
-        if tool_call is None:
+        if not all_calls:
             rewards.append(0.0)
             continue
 
-        tool = tool_call.get("tool", "").strip().lower()
-        params = tool_call.get("parameters", {})
-        if not isinstance(params, dict):
-            params = {}
+        has_investigation = False
+        has_os = False
+        has_terminal = False
+        has_dummy = False
+        has_valid = False
 
-        # Check for dummy/empty parameters on tools that require them
-        tools_needing_params = {
-            "get_customer_profile", "query_transactions", "check_watchlist",
-            "trace_network", "check_source_of_funds", "write_to_case_file",
-            "file_sar", "check_device_overlap",
-        }
-        if tool in tools_needing_params and (not params or all(
-            v == "" or v is None for v in params.values()
-        )):
+        for call in all_calls:
+            tool = call.get("tool", "").strip().lower()
+            params = call.get("parameters", {})
+            if not isinstance(params, dict):
+                params = {}
+
+            # Check for dummy/empty parameters
+            if tool in tools_needing_params and (not params or all(
+                v == "" or v is None for v in params.values()
+            )):
+                has_dummy = True
+                continue
+
+            has_valid = True
+            if tool in _INVESTIGATION_TOOLS:
+                has_investigation = True
+            elif tool in _OS_TOOLS:
+                has_os = True
+            elif tool in {"file_sar", "close_alert"}:
+                has_terminal = True
+
+        if not has_valid and has_dummy:
             rewards.append(-0.3)
-            continue
-
-        if tool in _INVESTIGATION_TOOLS:
-            rewards.append(0.3)
-        elif tool in _OS_TOOLS:
-            rewards.append(0.2)
-        elif tool in {"file_sar", "close_alert"}:
-            rewards.append(0.5)
         else:
-            rewards.append(0.0)
+            score = 0.0
+            if has_investigation:
+                score += 0.3
+            if has_os:
+                score += 0.2
+            if has_terminal:
+                score += 0.1
+            rewards.append(score)
 
     return rewards
 
 
 def reward_environment_execution(completions, **kwargs) -> List[float]:
-    """R3: Environment Execution — The ground-truth reward from the environment.
+    """R3: Environment Execution — Multi-step ground-truth reward.
 
-    This is the core OpenEnv pattern: execute the tool call against a fresh
-    AMLEnvironment instance and return the environment's reward signal.
+    Executes ALL parsed tool calls against a deterministically-seeded
+    AMLEnvironment instance, accumulating the environment's dense reward
+    signal across the full investigation trajectory.
 
-    Anti-gaming target: This is the HARDEST reward to game because it
-    requires actually interacting correctly with the environment. The
-    environment's dense reward system includes:
+    The environment's reward system includes:
     - Action cost (-0.02 per step)
     - Redundancy penalty (-0.03 for duplicate calls)
     - Page fault penalty (-0.05 for accessing evicted data)
@@ -414,100 +488,113 @@ def reward_environment_execution(completions, **kwargs) -> List[float]:
     - Investigation bonuses (+0.02-0.05 for first use of each tool)
     - Terminal TP/TN/FP/FN scoring
     """
-    rewards = []
-    for completion in completions:
-        text = _extract_completion_text(completion)
-        tool_call = parse_tool_call(text)
+    from server.aml_environment import AMLEnvironment
+    from models import AMLAction
 
-        if tool_call is None:
+    rewards = []
+    scenario_seeds = kwargs.get("scenario_seed", [])
+    task_ids = kwargs.get("task_id", [])
+
+    for idx, completion in enumerate(completions):
+        text = _extract_completion_text(completion)
+        all_calls = parse_all_tool_calls(text)
+
+        if not all_calls:
             rewards.append(-0.5)
             continue
 
-        tool = tool_call.get("tool", "").strip().lower()
-        params = tool_call.get("parameters", {})
-        if not isinstance(params, dict):
-            params = {}
-
         try:
-            from server.aml_environment import AMLEnvironment
-            from models import AMLAction
+            # Deterministic seed — replays the exact same scenario that was
+            # shown to the model in the prompt (fixes scenario mismatch)
+            seed = scenario_seeds[idx] if isinstance(scenario_seeds, list) and idx < len(scenario_seeds) else 42
+            task_id = task_ids[idx] if isinstance(task_ids, list) and idx < len(task_ids) else "easy"
 
+            random.seed(seed)
             env = AMLEnvironment()
-            task_id = kwargs.get("task_id", ["easy"])
-            if isinstance(task_id, list):
-                task_id = task_id[0] if task_id else "easy"
             env.reset(task_id=task_id)
 
-            action = AMLAction(tool=tool, parameters=params)
-            obs = env.step(action)
+            cumulative_reward = 0.0
+            for call in all_calls:
+                tool = call.get("tool", "").strip().lower()
+                params = call.get("parameters", {})
+                if not isinstance(params, dict):
+                    params = {}
 
-            if obs.done:
-                # Terminal action — full episode score
-                rewards.append(float(obs.reward or 0.0))
-            else:
-                # Non-terminal — step reward from grader
-                rewards.append(float(obs.reward or 0.0))
+                action = AMLAction(tool=tool, parameters=params)
+                obs = env.step(action)
+                cumulative_reward += float(obs.reward or 0.0)
 
-        except Exception:
+                if obs.done:
+                    break  # Episode ended (terminal action)
+
+            rewards.append(cumulative_reward)
+
+        except Exception as e:
+            print(f"  ⚠ R3 env error (completion {idx}): {type(e).__name__}: {e}")
             rewards.append(-0.3)
 
     return rewards
 
 
 def reward_os_mechanics(completions, **kwargs) -> List[float]:
-    """R4: OS Mechanics — Does the agent leverage the OS-inspired features?
+    """R4: OS Mechanics — Does the agent leverage OS-inspired features?
 
-    Anti-gaming target: Ensures the agent doesn't ignore the innovative
-    OS mechanics. An agent that never writes to disk, never uses async,
-    and never updates its system prompt gets penalized.
+    Multi-step scoring: Evaluates ALL tool calls in the completion to
+    detect usage of OS-mechanic tools anywhere in the investigation.
 
-    Scoring:
-        +0.3   Used write_to_case_file (demonstrates memory management)
-        +0.3   Used search_compliance_manual (knowledge retrieval)
-        +0.2   Used update_system_prompt (kernel-level meta-prompting)
-        +0.2   Used request_wire_trace (async job scheduling)
-        +0.1   Used retrieve_async_result (interrupt handling)
-         0.0   Used a non-OS tool (neutral)
-        -0.1   Provided invalid content to write_to_case_file (empty string)
+    Scoring (per unique OS tool used):
+        +0.3   write_to_case_file with non-empty content
+        +0.3   search_compliance_manual with non-empty query
+        +0.2   update_system_prompt with non-empty rule (kernel meta-prompting)
+        +0.2   request_wire_trace (async job scheduling)
+        +0.1   retrieve_async_result (interrupt handling)
+        -0.1   OS tool with empty/invalid content (gaming attempt)
+         0.0   No OS tools used (neutral)
     """
     rewards = []
     for completion in completions:
         text = _extract_completion_text(completion)
-        tool_call = parse_tool_call(text)
+        all_calls = parse_all_tool_calls(text)
 
-        if tool_call is None:
+        if not all_calls:
             rewards.append(0.0)
             continue
 
-        tool = tool_call.get("tool", "").strip().lower()
-        params = tool_call.get("parameters", {})
-        if not isinstance(params, dict):
-            params = {}
+        score = 0.0
+        seen_tools = set()
 
-        if tool == "write_to_case_file":
-            content = params.get("content", params.get("note", ""))
-            if content and len(str(content).strip()) > 3:
-                rewards.append(0.3)  # Good: persisting evidence to disk
-            else:
-                rewards.append(-0.1)  # Empty write — gaming attempt
-        elif tool == "search_compliance_manual":
-            query = params.get("query", "")
-            if query and len(str(query).strip()) > 2:
-                rewards.append(0.3)
-            else:
-                rewards.append(0.0)
-        elif tool == "update_system_prompt":
-            rule = params.get("rule", "")
-            if rule and len(str(rule).strip()) > 5:
-                rewards.append(0.2)  # Kernel-level meta-prompting
-            else:
-                rewards.append(-0.1)  # Empty injection — gaming
-        elif tool == "request_wire_trace":
-            rewards.append(0.2)  # Async job scheduling
-        elif tool == "retrieve_async_result":
-            rewards.append(0.1)  # Interrupt handling
-        else:
-            rewards.append(0.0)  # Non-OS tool — neutral for this reward
+        for call in all_calls:
+            tool = call.get("tool", "").strip().lower()
+            if tool in seen_tools:
+                continue  # No double-counting same tool
+            seen_tools.add(tool)
+
+            params = call.get("parameters", {})
+            if not isinstance(params, dict):
+                params = {}
+
+            if tool == "write_to_case_file":
+                content = params.get("content", params.get("note", ""))
+                if content and len(str(content).strip()) > 3:
+                    score += 0.3
+                else:
+                    score -= 0.1
+            elif tool == "search_compliance_manual":
+                query = params.get("query", "")
+                if query and len(str(query).strip()) > 2:
+                    score += 0.3
+            elif tool == "update_system_prompt":
+                rule = params.get("rule", "")
+                if rule and len(str(rule).strip()) > 5:
+                    score += 0.2
+                else:
+                    score -= 0.1
+            elif tool == "request_wire_trace":
+                score += 0.2
+            elif tool == "retrieve_async_result":
+                score += 0.1
+
+        rewards.append(score)
 
     return rewards
 
