@@ -66,11 +66,16 @@ export default function Home() {
         setTimeout(() => {
             setView('case');
             setTransitioning(false);
-            // Start replay
+            // Start replay and auto-play
             if (replayRef.current && allSteps.length > 0) {
                 replayRef.current.seekTo(0);
                 setCurrentStepIndex(0);
                 setReplaySteps(allSteps.slice(0, 1));
+                // Auto-play after a brief delay for the transition to settle
+                setTimeout(() => {
+                    replayRef.current?.play();
+                    setIsPlaying(true);
+                }, 600);
             }
         }, 800);
     }, [allSteps]);
