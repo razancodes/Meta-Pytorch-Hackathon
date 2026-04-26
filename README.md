@@ -127,6 +127,8 @@ See [TRAINING.md](TRAINING.md) for copy-paste Colab cells, full CLI reference, a
 
 ---
 
+## Architecture
+
 ```mermaid
 graph TB
     subgraph Frontend["Frontend — Next.js Glass Box Visualizer"]
@@ -190,7 +192,7 @@ graph TB
 
 ## Tool Roster (18 Tools)
 
-| Domain Investigation (10) | OS Mechanic (5) | Terminal (2+1) |
+| Domain Investigation (11) | OS Mechanic (5) | Terminal (2) |
 |:---|:---|:---|
 | `review_alert` | `write_to_case_file` — Page to disk | `file_sar` |
 | `get_customer_profile` | `request_wire_trace` — Async job | `close_alert` |

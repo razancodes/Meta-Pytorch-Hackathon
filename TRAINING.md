@@ -89,10 +89,8 @@ Unsloth's 4-bit quantization internally uses float16 as the BNB compute dtype. U
 
 ```python
 %%capture
-# ═══════════════════════════════════════════════════════════
 # CELL 1: Install Training Stack
 # Runtime → GPU → A100 (Colab Pro) or L4
-# ═══════════════════════════════════════════════════════════
 #
 # ⚠️ DO NOT install flash-attn separately!
 # Unsloth uses its own custom Triton attention kernels that are
@@ -120,9 +118,7 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 2: Clone the project
-# ═══════════════════════════════════════════════════════════
 
 !git clone https://github.com/razancodes/Meta-Pytorch-Hackathon.git
 %cd Meta-Pytorch-Hackathon
@@ -135,28 +131,22 @@ print(f"✓ Unsloth + TRL {trl.__version__} + PEFT {peft.__version__} ready")
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 3: Verify environment (no GPU needed)
-# ═══════════════════════════════════════════════════════════
 
 !python tests/test_smoke.py
 # Expected: 8/8 tests passed ✓
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 4: Dry-run (4 prompts, 1 epoch, no WandB)
-# ═══════════════════════════════════════════════════════════
 
 !python train_grpo.py --dry-run
 # Verifies: model loading, prompt generation, reward function, GRPO update
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 5: ★ GRPO Training (~3-5 hours on A100)
-# THIS IS THE PRIMARY TRAINING CELL
-# ═══════════════════════════════════════════════════════════
+# This is the primary training cell.
 
 import wandb
 wandb.login()
@@ -176,10 +166,8 @@ wandb.login()
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 5b (ALTERNATIVE): Run via HF Jobs CLI
 # Uses pay-as-you-go HF compute ($0.80/hr for L4)
-# ═══════════════════════════════════════════════════════════
 
 # !pip install huggingface_hub[cli]
 # !hf jobs uv run --flavor l4x1 python train_grpo.py \
@@ -187,17 +175,13 @@ wandb.login()
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 6: Evaluate best checkpoint (9 combos)
-# ═══════════════════════════════════════════════════════════
 
 !python eval_harness.py --checkpoint checkpoints/defender-grpo
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 7: Run 1MDB demo + download AGUI replay
-# ═══════════════════════════════════════════════════════════
 
 # Scripted (deterministic, no GPU)
 !python demo_eval.py --dry-run
@@ -212,9 +196,7 @@ wandb.login()
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 8: Save checkpoints to Google Drive
-# ═══════════════════════════════════════════════════════════
 
 import shutil, os
 
@@ -226,9 +208,7 @@ print("✅ Done! Find it in your Drive → memex_checkpoints/")
 ```
 
 ```python
-# ═══════════════════════════════════════════════════════════
 # CELL 9: Push trained model to HuggingFace Hub
-# ═══════════════════════════════════════════════════════════
 
 from huggingface_hub import HfApi
 api = HfApi()
@@ -236,7 +216,7 @@ api = HfApi()
 # Push the LoRA adapter
 api.upload_folder(
     folder_path="checkpoints/defender-grpo",
-    repo_id="MuazTPM/memex-defender-grpo",
+    repo_id="MuazTPM/defender-model",
     repo_type="model",
     commit_message="Defender GRPO checkpoint (Unsloth + TRL)"
 )
