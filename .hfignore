@@ -21,6 +21,9 @@ frontend/
 # Archive (legacy scripts, not needed for runtime)
 archive/
 
+# Documentation assets (training curve PNGs — not needed for runtime server)
+assets/
+
 # Training artifacts
 checkpoints/
 checkpoints_70b/
