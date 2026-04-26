@@ -89,8 +89,6 @@ See [TRAINING.md](TRAINING.md) for copy-paste Colab cells, full CLI reference, a
 
 ## Results
 
-**WandB Dashboard:** [wandb.ai/n0s0ktesting-testing-labs/memex-grpo](https://wandb.ai/n0s0ktesting-testing-labs/memex-grpo)
-
 150 steps on an A100, 3h 44m. The agent went from producing random single-tool outputs to running full multi-step investigations with all three OS mechanics.
 
 ### Training Curves
