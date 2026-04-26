@@ -129,64 +129,7 @@ See [TRAINING.md](TRAINING.md) for copy-paste Colab cells, full CLI reference, a
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph Frontend["Frontend — Next.js Glass Box Visualizer"]
-        Globe["3D Threat Map<br/>(react-globe.gl)"]
-        Graph["Entity Graph<br/>(Cytoscape.js)"]
-        RAM_UI["RAM Monitor<br/>(2 slots)"]
-        Disk_UI["Disk Storage"]
-        Kernel_UI["Kernel Directives"]
-        PLR_UI["PLR Curriculum<br/>Metrics"]
-    end
-
-    subgraph Server["Environment Server — FastAPI"]
-        direction TB
-        Endpoints["/health · /reset · /step · /state<br/>/schema · /metadata · /web · /ws"]
-
-        subgraph Core["AMLEnvironment (18 Tool Handlers)"]
-            DomainTools["Domain Investigation (11)<br/>review_alert · get_customer_profile<br/>query_transactions · check_watchlist<br/>trace_network · check_source_of_funds<br/>check_market_price · assess_risk<br/>check_device_overlap · verify_customs_invoice<br/>query_beneficial_ownership"]
-            OSTools["OS Mechanic (5)<br/>write_to_case_file · request_wire_trace<br/>retrieve_async_result<br/>search_compliance_manual<br/>update_system_prompt"]
-            Terminal["Terminal (2)<br/>file_sar · close_alert"]
-        end
-
-        subgraph State["StateManager"]
-            RAMMGR["RAM (2 slots)<br/>LRU eviction"]
-            DiskMGR["Disk<br/>3 rewarded writes"]
-            AsyncQ["Async Queue<br/>2-4 step ETAs"]
-            KernelMGR["Kernel Directives<br/>6 valid modes"]
-        end
-
-        Grader["AMLGrader<br/>Per-step: page fault −0.05, disk +0.10, kernel +0.15<br/>Terminal: detection · entity F1 · typology · efficiency"]
-    end
-
-    subgraph Scenarios["Scenario Generation"]
-        ProcGen["Procedural Generator<br/>3 typologies × 3 difficulties<br/>Unique IDs per episode"]
-        Adversary["Launderer Agent<br/>PPO-trained evasive<br/>scenario generator"]
-    end
-
-    subgraph Training["Training Pipeline"]
-        GRPO["GRPO — TRL + Unsloth<br/>Llama-3.1-8B-Instruct (4-bit LoRA r=16)<br/>G=4 completions per prompt"]
-        R1["R1: Format Compliance"]
-        R2["R2: Investigation Quality"]
-        R3["R3: Environment Execution"]
-        R4["R4: OS Mechanics"]
-        SelfPlay["Self-Play Alternative<br/>Launderer PPO vs Defender PPO"]
-        PLR_Engine["PLR Curriculum Engine<br/>TD-error prioritized<br/>scenario sampling"]
-    end
-
-    Frontend -- "agui_state JSON" --- Endpoints
-    Endpoints --> Core
-    Core --> State
-    Core --> Grader
-    State --> Grader
-    ProcGen --> Core
-    Adversary --> Core
-    GRPO --> R1 & R2 & R3 & R4
-    R3 -- "env.step() loop" --> Core
-    PLR_Engine -- "difficulty, typology" --> ProcGen
-    SelfPlay --> Adversary
-```
+![Memex System Architecture](assets/MemexArchitecture.svg)
 
 ---
 
