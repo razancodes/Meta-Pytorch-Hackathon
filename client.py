@@ -39,9 +39,7 @@ class AMLEnvironmentClient:
         ).rstrip("/")
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
-    # ------------------------------------------------------------------
     # Core endpoints
-    # ------------------------------------------------------------------
 
     def health(self) -> Dict[str, Any]:
         """Check server health."""
@@ -92,9 +90,7 @@ class AMLEnvironmentClient:
         resp.raise_for_status()
         return resp.json()
 
-    # ------------------------------------------------------------------
     # Domain tool wrappers (12 tools)
-    # ------------------------------------------------------------------
 
     def review_alert(self, alert_id: Optional[str] = None) -> Dict[str, Any]:
         params = {"alert_id": alert_id} if alert_id else {}
@@ -166,9 +162,7 @@ class AMLEnvironmentClient:
             "findings": findings or [],
         })
 
-    # ------------------------------------------------------------------
     # Phase 3: FinCEN 4-Pillar tool wrappers (3 tools)
-    # ------------------------------------------------------------------
 
     def check_device_overlap(self, entity_id: str) -> Dict[str, Any]:
         """Check for shared device fingerprints / mule ring indicators."""
@@ -182,9 +176,7 @@ class AMLEnvironmentClient:
         """Trace beneficial ownership through shell layers to find UBOs."""
         return self.step("query_beneficial_ownership", parameters={"entity_id": entity_id})
 
-    # ------------------------------------------------------------------
     # OS-Mechanic tool wrappers (6 tools)
-    # ------------------------------------------------------------------
 
     def write_to_case_file(self, content: str) -> Dict[str, Any]:
         """Page important findings to persistent disk storage."""
@@ -223,9 +215,7 @@ class AMLEnvironmentClient:
         """Inject a compliance rule into the active kernel directives."""
         return self.step("update_system_prompt", parameters={"rule": rule})
 
-    # ------------------------------------------------------------------
     # Context manager
-    # ------------------------------------------------------------------
 
     def __enter__(self) -> "AMLEnvironmentClient":
         return self

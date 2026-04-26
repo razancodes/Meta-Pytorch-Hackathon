@@ -29,9 +29,7 @@ class ComplianceRule:
     text: str
 
 
-# ---------------------------------------------------------------------------
 # The Corpus — ~15 rules covering the three typologies + general AML
-# ---------------------------------------------------------------------------
 
 COMPLIANCE_RULES: List[ComplianceRule] = [
     # ---- Structuring -------------------------------------------------- #
@@ -221,9 +219,7 @@ COMPLIANCE_RULES: List[ComplianceRule] = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # Search Engine
-# ---------------------------------------------------------------------------
 
 def search_compliance_manual(
     query: str,

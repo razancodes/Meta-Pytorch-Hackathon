@@ -25,9 +25,7 @@ from models import (
     RAMUsage,
 )
 
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
 
 # RAM_CAPACITY deliberately set to 2 (not higher) to make memory management
 # a meaningful challenge. With only 2 observation slots, the agent MUST learn

@@ -21,24 +21,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
 # Path setup — ensure parent package is importable
-# ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
 for p in (_PARENT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-# ---------------------------------------------------------------------------
 # Internal imports
-# ---------------------------------------------------------------------------
 from models import AMLAction, AMLObservation, AMLState  # noqa: E402
 from server.aml_environment import AMLEnvironment  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Try OpenEnv create_app first
-# ---------------------------------------------------------------------------
 _openenv_available = False
 try:
     from openenv.core.env_server.http_server import create_app  # type: ignore
@@ -52,9 +46,7 @@ try:
 except ImportError:
     pass
 
-# ---------------------------------------------------------------------------
 # Standalone FastAPI (when openenv-core is not installed)
-# ---------------------------------------------------------------------------
 if not _openenv_available:
 
     # Request schemas (server-only; response types come from models.py)

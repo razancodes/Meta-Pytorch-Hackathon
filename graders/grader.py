@@ -45,9 +45,7 @@ class _StateProtocol(Protocol):
 
 
 
-# ---------------------------------------------------------------------------
 # Reward Weights — Explicit & Configurable
-# ---------------------------------------------------------------------------
 
 @dataclass
 class RewardWeights:
@@ -68,9 +66,7 @@ class RewardWeights:
     os: float = 0.2           # OS mechanics (page faults, async, kernel)
 
 
-# ---------------------------------------------------------------------------
 # Detection Component Constants
-# ---------------------------------------------------------------------------
 
 # TP/TN/FP/FN rewards for the detection component (R_detect)
 R_TP: float = +1.00    # Suspicious + SAR filed (correct)
@@ -78,9 +74,7 @@ R_TN: float = +0.50    # Clean + alert closed (correct)
 R_FN: float = -2.00    # Suspicious + alert closed (missed ML)
 R_FP: float = -0.75    # Clean + SAR filed (false alarm)
 
-# ---------------------------------------------------------------------------
 # Per-Step Constants
-# ---------------------------------------------------------------------------
 
 ACTION_COST:            float = -0.02   # Every step
 REDUNDANT_PENALTY:      float = -0.03   # Duplicate tool+params

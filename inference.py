@@ -19,9 +19,7 @@ MAX_STEPS_PER_TASK = 25
 REQUEST_TIMEOUT = 60.0
 BENCHMARK = "aml_investigation_env"
 
-# --------------------------------------------------------------------------
 # System Prompt — dynamically extended with kernel directives each turn
-# --------------------------------------------------------------------------
 
 BASE_SYSTEM_PROMPT = """You are a Senior AML (Anti-Money Laundering) Compliance Investigator operating within a **Memex OS-Agent Environment**. You manage a limited context window (RAM) and must use OS-level tools to persist memory and acquire intelligence.
 

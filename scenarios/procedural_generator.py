@@ -26,9 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .base import BaseScenario
 
-# ===========================================================================
 # Name / ID pools for randomization
-# ===========================================================================
 
 _FIRST_NAMES = [
     "James", "Maria", "Robert", "Patricia", "David", "Jennifer", "Ricardo",
@@ -176,9 +174,7 @@ _WIRE_DESCRIPTIONS_SUSPECT = [
 ]
 
 
-# ===========================================================================
 # Helper functions
-# ===========================================================================
 
 def _uid(prefix: str = "C", length: int = 5) -> str:
     """Generate a random alphanumeric ID with a prefix."""
@@ -299,9 +295,7 @@ def _generate_customs_invoice(
     }
 
 
-# ===========================================================================
 # Generated Scenario (conforms to BaseScenario)
-# ===========================================================================
 
 class GeneratedScenario(BaseScenario):
     """A procedurally generated scenario instance.
@@ -360,9 +354,7 @@ class GeneratedScenario(BaseScenario):
         return self._data.get("beneficial_ownership", {})
 
 
-# ===========================================================================
 # Scenario Generator
-# ===========================================================================
 
 class ScenarioGenerator:
     """Procedurally generates AML investigation scenarios.
@@ -1943,9 +1935,7 @@ class ScenarioGenerator:
         return parts[:n]
 
 
-# ===========================================================================
 # Module-level convenience
-# ===========================================================================
 
 _default_generator: Optional[ScenarioGenerator] = None
 

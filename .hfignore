@@ -2,6 +2,9 @@
 # Used by: openenv push --exclude .hfignore
 # Also read by: huggingface_hub upload_folder/upload_large_folder
 
+# Colab notebooks (training only, not needed for runtime)
+*.ipynb
+
 # Python environments
 venv/
 .venv/

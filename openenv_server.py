@@ -37,17 +37,13 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-# ---------------------------------------------------------------------------
 # Path bootstrap — guarantee the project root is importable regardless of
 # how uvicorn discovers this module (cwd, PYTHONPATH, or package install).
-# ---------------------------------------------------------------------------
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-# ---------------------------------------------------------------------------
 # Structured logging
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -55,15 +51,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("openenv_server")
 
-# ---------------------------------------------------------------------------
 # Internal imports (environment + models)
-# ---------------------------------------------------------------------------
 from models import AMLAction, AMLObservation, AMLState  # noqa: E402
 from server.aml_environment import AMLEnvironment  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Boot-time validation — fail fast if the environment is broken.
-# ---------------------------------------------------------------------------
 _BOOT_START = time.monotonic()
 
 
@@ -110,9 +102,7 @@ except ImportError:
         "openenv-core not installed — falling back to standalone FastAPI server"
     )
 
-# ---------------------------------------------------------------------------
 # Standalone fallback (mirrors the OpenEnv HTTP contract exactly)
-# ---------------------------------------------------------------------------
 if not _openenv_available:
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware

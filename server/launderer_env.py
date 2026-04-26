@@ -39,9 +39,7 @@ except ImportError:
     from aml_investigation_env.graders.grader import AMLGrader
 
 
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
 
 # Reward tiers — shaped to preserve the core game:
 #   Primary reward = Defender failure on genuinely suspicious, valid scenario.
@@ -71,9 +69,7 @@ REQUIRED_SCENARIO_KEYS = {
 }
 
 
-# ---------------------------------------------------------------------------
 # JSON Extraction (robust against LLM formatting quirks)
-# ---------------------------------------------------------------------------
 
 def extract_json(raw_text: str) -> Optional[Dict[str, Any]]:
     """Extract a JSON object from raw LLM output.
@@ -154,9 +150,7 @@ def extract_json(raw_text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-# ---------------------------------------------------------------------------
 # Validation
-# ---------------------------------------------------------------------------
 
 def validate_scenario(data: Dict[str, Any]) -> Tuple[bool, str]:
     """Validate a Launderer-generated scenario.
@@ -214,9 +208,7 @@ def validate_scenario(data: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
-# ---------------------------------------------------------------------------
 # LaundererEnv
-# ---------------------------------------------------------------------------
 
 @dataclass
 class LaundererObs:

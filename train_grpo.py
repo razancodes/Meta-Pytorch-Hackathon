@@ -37,7 +37,6 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 # Suppress known library-internal deprecation warnings
-# ---------------------------------------------------------------------------
 warnings.filterwarnings("ignore", message=".*attention mask API.*AttentionMaskConverter.*")
 warnings.filterwarnings("ignore", message=".*warmup_ratio is deprecated.*")
 warnings.filterwarnings("ignore", message=".*use_return_dict.*is deprecated.*")

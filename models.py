@@ -21,9 +21,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
-# ---------------------------------------------------------------------------
 # Enums
-# ---------------------------------------------------------------------------
 
 class AsyncJobStatus(str, Enum):
     """Status of an asynchronous background task."""
@@ -57,9 +55,7 @@ class SARTypology(str, Enum):
     FALSE_POSITIVE = "false_positive"
 
 
-# ---------------------------------------------------------------------------
 # Action
-# ---------------------------------------------------------------------------
 
 class AMLAction(BaseModel):
     """Agent action — a single tool call with parameters."""
@@ -77,9 +73,7 @@ class AMLAction(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
 # Observation
-# ---------------------------------------------------------------------------
 
 class AMLObservation(BaseModel):
     """Observation returned to the agent after each step."""
@@ -107,9 +101,7 @@ class AMLObservation(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
 # Async Job (Interrupt subsystem)
-# ---------------------------------------------------------------------------
 
 class AsyncJobInfo(BaseModel):
     """Metadata for a background task in the Interrupt subsystem."""
@@ -130,9 +122,7 @@ class AsyncJobInfo(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
 # AGUI State (frontend visualization payload)
-# ---------------------------------------------------------------------------
 
 class RAMUsage(BaseModel):
     """Current context window state for the AGUI."""
@@ -163,9 +153,7 @@ class AGUIState(BaseModel):
     curriculum: CurriculumState = Field(default_factory=CurriculumState)
 
 
-# ---------------------------------------------------------------------------
 # Device Fingerprint (Pillar 1: Mule-Ring Detection)
-# ---------------------------------------------------------------------------
 
 class DeviceFingerprint(BaseModel):
     """Device and geolocation data attached to an entity or transaction."""
@@ -185,9 +173,7 @@ class DeviceFingerprint(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
 # Customs Invoice (Pillar 2: Trade-Based ML / Phantom Shipments)
-# ---------------------------------------------------------------------------
 
 class CustomsInvoice(BaseModel):
     """Trade invoice record for customs/TBML verification."""
@@ -209,9 +195,7 @@ class CustomsInvoice(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
 # Beneficial Ownership Node (Pillar 4: Deep Graph / UBO Tracing)
-# ---------------------------------------------------------------------------
 
 class BeneficialOwnerNode(BaseModel):
     """Node in the beneficial ownership graph for UBO tracing."""
@@ -244,9 +228,7 @@ class BeneficialOwnerNode(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
 # FinCEN SAR Payload (Step 3: Data Contract)
-# ---------------------------------------------------------------------------
 
 class SARPayload(BaseModel):
     """FinCEN-compliant Suspicious Activity Report data contract.
@@ -289,9 +271,7 @@ class SARPayload(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
 # State
-# ---------------------------------------------------------------------------
 
 class AMLState(BaseModel):
     """Internal environment state tracked across steps.

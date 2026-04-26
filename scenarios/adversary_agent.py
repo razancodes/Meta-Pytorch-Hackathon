@@ -50,9 +50,7 @@ from .procedural_generator import (
 )
 
 
-# ---------------------------------------------------------------------------
 # LLM-backed Adversarial Agent
-# ---------------------------------------------------------------------------
 
 # System prompt for the adversary LLM
 _ADVERSARY_SYSTEM_PROMPT = """You are a Red Team scenario generator for an AML (Anti-Money Laundering) investigation benchmark.
