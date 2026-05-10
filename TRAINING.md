@@ -453,3 +453,164 @@ python archive/hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct --adapter ch
 | `archive/train_launderer_ppo.py` | Launderer single-step PPO (generates evasive scenarios) |
 | `archive/train_dpo.py` | Offline DPO trainer (continuous learning from user corrections) |
 | `archive/hotswap.py` | Zero-downtime LoRA adapter hot-swap utility |
+
+---
+
+## ★ Production Deployment — AgentOS-Kernel (`agent_os_core/`)
+
+> **Target:** A100 80GB VRAM (bare metal)  
+> **Zero API calls.** Everything runs locally.
+
+The `agent_os_core/` directory contains the **production inference runtime** — a high-performance middleware that replaces the Unsloth/TRL training loop with real-time, GPU-native agentic reasoning. It uses a fundamentally different architecture from the training pipeline:
+
+| Aspect | GRPO Training (root) | AgentOS-Kernel (`agent_os_core/`) |
+|--------|---------------------|-----------------------------------|
+| Model | Llama 3.1 8B (4-bit LoRA) | Qwen2.5-72B-Instruct-AWQ (vLLM) |
+| Purpose | Learn investigative policies | Deploy trained policies at scale |
+| Memory | TRL handles context | 3-tier Cognitive Cache (L1/L2/L3) |
+| Tool execution | In-process Python | Rust/Tokio via PyO3 (GIL-bypass) |
+| Format enforcement | Reward shaping (R1) | JSON-schema constrained decoding |
+
+### Prerequisites
+
+| Dependency | Purpose |
+|-----------|---------|
+| `vllm` | High-throughput LLM serving (AWQ quantization) |
+| `transformers` | Qwen2.5-1.5B compaction model |
+| `sentence-transformers` | BGE embeddings + cross-encoder reranking |
+| `lancedb` | L3 persistent vector storage |
+| `tiktoken` | Token counting for L1 sliding window |
+| `maturin` | Build Rust PyO3 bindings |
+
+### VRAM Budget (A100 80GB)
+
+| Component | Model | VRAM |
+|-----------|-------|------|
+| Reasoning Engine | Qwen2.5-72B-Instruct-AWQ via vLLM | ~38 GB |
+| Compaction Engine | Qwen2.5-1.5B-Instruct via transformers | ~3 GB |
+| Embedder | BAAI/bge-base-en-v1.5 | ~0.4 GB |
+| Reranker | BAAI/bge-reranker-v2-m3 | ~1.1 GB |
+| Tool Runtime | Rust/Tokio via PyO3 | 0 GB |
+| **Total** | | **~42.5 GB** |
+| **Headroom (A100 80GB)** | | **~37.5 GB ✓** |
+
+### Setup
+
+```bash
+# 1. Build the Rust async tool runtime
+cd agent_os_core
+pip install maturin tiktoken lancedb numpy pyarrow
+maturin develop --release
+
+# 2. Install inference models (first run downloads ~40GB)
+pip install vllm transformers sentence-transformers
+
+# 3. Run tests in mock mode (no GPU required)
+python test_runtime.py       # Rust runtime: 5 tests
+python test_memory.py        # L1/L2 cache: 5 tests
+python test_l3.py            # L3 index: 5 tests
+python test_integration.py   # Full orchestrator: 6 tests
+```
+
+### 3-Tier Cognitive Cache
+
+The Cognitive Cache solves **context starvation** — the [Lost in the Middle](https://arxiv.org/abs/2307.03172) problem where evidence gets buried in the attention dead zone.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MEMORY ARCHITECTURE                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  L1 — Raw Conversation Window (6K tokens)                   │
+│  │  Sliding window of user/assistant/tool turns              │
+│  │  Token-counted via tiktoken                               │
+│  │  Overflow → evict oldest N turns → compact to L2          │
+│                                                              │
+│  L2 — Structured Scratchpad (2K tokens)                     │
+│  │  Entity→facts map: {"CUST-A": ["PEP", "offshore"]}      │
+│  │  Compacted by Qwen2.5-1.5B (structured JSON extraction)  │
+│  │  Injected at PROMPT START (high attention position)       │
+│  │  Deduplicates facts across compaction cycles              │
+│  │  Overflow → archive oldest entities to L3                 │
+│                                                              │
+│  L3 — LanceDB Persistent Archive (unbounded)               │
+│     BGE-base-en-v1.5 embeddings for vector search            │
+│     Cross-encoder gating (BGE-reranker-v2-m3)               │
+│     Only injected when relevance score > 0.50               │
+│     Injected at PROMPT END (high attention position)         │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### How It Integrates with the Root Environment
+
+The AgentOS orchestrator (`agent_os.py`) can be wired to execute tools against the OpenEnv server (`openenv_server.py`):
+
+```python
+# Connect AgentOS to the Memex environment
+from agent_os import AgentOS
+
+os = AgentOS(use_mock_llm=False)  # Uses vLLM + Qwen2.5-72B
+
+# For production: set Rust runtime to HTTP dispatch mode
+os._tool_runtime.set_mode("http", "http://localhost:8000")
+
+# Now tool calls route through the FastAPI server
+result = await os.step("Investigate alert ALERT-2024-1MDB-7701")
+```
+
+### Mock Mode (Testing Without GPU)
+
+All components support `use_mock=True` for CPU-only testing:
+
+```python
+from agent_os import AgentOS
+
+os = AgentOS(
+    use_mock_llm=True,           # Keyword-based mock instead of vLLM
+    use_mock_compactor=True,     # Heuristic compaction instead of Qwen 1.5B
+    use_mock_embeddings=True,    # Deterministic hash vectors instead of BGE
+)
+result = await os.step("Investigate this alert")
+```
+
+---
+
+## Complete File Reference
+
+| File | Purpose |
+|------|---------|
+| **Root — Environment** | |
+| `models.py` | Pydantic data contracts: `AMLAction`, `AMLObservation`, `AMLState`, `AGUIState` |
+| `state_manager.py` | OS mechanics engine: Virtual Memory (RAM/Disk), Interrupts (async jobs), Kernel directives |
+| `server/aml_environment.py` | Core OpenEnv environment: 18-tool dispatch, reward calculation, scenario lifecycle |
+| `openenv_server.py` | FastAPI server: `/reset`, `/step`, `/state`, `/health` — OpenEnv SDK compatible |
+| `client.py` | HTTP client wrapper with typed methods for all 18 tools |
+| `inference.py` | Standalone ReAct inference agent (OpenAI-compatible API) |
+| `openenv.yaml` | OpenEnv environment manifest |
+| **Root — Training & Evaluation** | |
+| `train_grpo.py` | ★ Primary GRPO training script (TRL + Unsloth, 4 reward functions) |
+| `self_play.py` | Two-agent self-play orchestrator (Defender vs Launderer) |
+| `eval_harness.py` | Multi-typology benchmark suite (6 scripted scenarios) |
+| `demo_eval.py` | 1MDB demo evaluation with AGUI replay recording |
+| **Root — Scenarios & Grading** | |
+| `scenarios/procedural_generator.py` | Procedural AML scenario generation engine |
+| `scenarios/compliance_manual.py` | Searchable compliance knowledge base |
+| `graders/grader.py` | Dense reward engine (TP/TN/FP/FN scoring) |
+| `curriculum/plr_engine.py` | Prioritized Level Replay curriculum |
+| **AgentOS-Kernel** | |
+| `agent_os_core/agent_os.py` | Production orchestrator: vLLM + Cognitive Cache + Rust runtime |
+| `agent_os_core/memory_manager.py` | L1/L2 cognitive cache with LLM compaction |
+| `agent_os_core/l3_index.py` | L3 LanceDB index with cross-encoder gating |
+| `agent_os_core/src/lib.rs` | Rust Tokio async runtime (PyO3 bindings) |
+| `agent_os_core/Cargo.toml` | Rust crate config (pyo3, tokio, reqwest) |
+| `agent_os_core/pyproject.toml` | Maturin build config |
+| **Documentation** | |
+| `README.md` | Project overview, architecture, quick-start |
+| `TRAINING.md` | This file — full training + deployment guide |
+| `BLOG.md` | Post-mortem: debugging, reward design, 1MDB walkthrough |
+| **Infrastructure** | |
+| `Dockerfile` | HF Spaces deployment container |
+| `requirements.txt` | Python dependencies |
+| `.hfignore` | HF Space upload exclusions (excludes `agent_os_core/`) |
+| `.gitignore` | Git exclusions (build artifacts, checkpoints, caches) |
