@@ -65,7 +65,7 @@ The agent has **18 tools** across three categories, 3 AML typologies (structurin
 
 ## Training
 
-We train a **Meta-Llama-3.1-8B-Instruct** (4-bit via Unsloth) using TRL's `GRPOTrainer` with 4 decomposed reward functions:
+We train a **Qwen2.5-7B-Instruct** (4-bit via Unsloth) using TRL's `GRPOTrainer` with 4 decomposed reward functions:
 
 | Reward | What It Scores |
 |--------|---------------|

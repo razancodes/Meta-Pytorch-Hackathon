@@ -5,7 +5,7 @@ Trains the Defender agent using TRL's GRPOTrainer + Unsloth 4-bit quantization.
 This is the PRIMARY training entrypoint for the OpenEnv hackathon submission.
 
 Architecture:
-    - Model: Meta-Llama-3.1-8B-Instruct (4-bit via Unsloth) with LoRA adapters
+    - Model: Qwen2.5-7B-Instruct (4-bit via Unsloth) with LoRA adapters
     - Algorithm: GRPO (Group Relative Policy Optimization)
     - Reward: OpenEnv reward function — runs each completion through AMLEnvironment
     - Dataset: Procedurally generated AML investigation prompts
@@ -18,7 +18,7 @@ Usage:
     python train_grpo.py --dry-run
 
     # Custom settings
-    python train_grpo.py --model unsloth/Meta-Llama-3.1-8B-Instruct \\
+    python train_grpo.py --model unsloth/Qwen2.5-7B-Instruct \\
         --num-prompts 200 --num-generations 4 --lr 5e-6
 """
 
@@ -61,8 +61,8 @@ class GRPOTrainConfig:
     # Those models have float16 compute dtype baked into the BNB quantization
     # config, which causes "Half vs BFloat16" crashes during GRPO training.
     # Instead, we use the base model and let Unsloth quantize on-the-fly
-    # with the correct bfloat16 compute dtype.
-    model_name: str = "unsloth/Meta-Llama-3.1-8B-Instruct"
+    # with the correct compute dtype.
+    model_name: str = "unsloth/Qwen2.5-7B-Instruct"
     max_seq_length: int = 4096
     load_in_4bit: bool = True
 

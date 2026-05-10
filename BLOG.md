@@ -68,7 +68,7 @@ The three AML topologies we cover are:
 
 ## Training: GRPO with 4 Decomposed Rewards
 
-We trained a Meta-Llama-3.1-8B-Instruct model using Unsloth 4-bit quantization and TRL's `GRPOTrainer`. However, instead of one reward function, we use FOUR independent reward functions that TRL sums together. This makes reward hacking much harder and gaming one signal does not help if the others penalize the degenerate behavior.
+We trained a Qwen2.5-7B-Instruct model using Unsloth 4-bit quantization and TRL's `GRPOTrainer`. However, instead of one reward function, we use FOUR independent reward functions that TRL sums together. This makes reward hacking much harder and gaming one signal does not help if the others penalize the degenerate behavior.
 
 | Reward Function | What It Scores | Why It Exists |
 |----------------|---------------|--------------|
@@ -96,7 +96,7 @@ We wanted to make sure exploiting rewards is as hard as possible.
 
 | Parameter | Value |
 |-----------|-------|
-| Model | `unsloth/Meta-Llama-3.1-8B-Instruct` (4-bit NF4) |
+| Model | `unsloth/Qwen2.5-7B-Instruct` (4-bit NF4) |
 | LoRA rank | 16 (all attention + MLP projections) |
 | GRPO group size | G=4 completions per prompt |
 | Learning rate | 5e-6 (cosine decay) |

@@ -9,7 +9,7 @@ Implements alternating best-response PPO training:
   Phase 3: Freeze Launderer → Train Defender on mixed scenarios (N iterations)
   Phase 4+: Repeat Phases 2-3 (outer loop)
 
-Critical constraint: Only one 8B model is loaded at a time (L4 has ~22 GB).
+Critical constraint: Only one 7B model is loaded at a time (L4 has ~22 GB).
 Model swapping is done via LoRA checkpoint save/load.
 
 Usage:
@@ -42,8 +42,8 @@ sys.path.insert(0, PROJECT_ROOT)
 class SelfPlayConfig:
     """Configuration for the self-play training loop."""
 
-    # Model (shared base for both agents)
-    base_model: str = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+    # Model (shared base for both agents — unified Qwen 2.5 family)
+    base_model: str = "unsloth/Qwen2.5-7B-Instruct"
     max_seq_length: int = 4096    # A100: 4096 (L4: use 2048)
 
     # Self-play schedule

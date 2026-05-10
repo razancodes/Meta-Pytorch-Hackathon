@@ -4,6 +4,8 @@
 > **GRPO** (TRL + Unsloth) is the **primary training path** — the Defender agent
 > learns to investigate AML alerts using Group Relative Policy Optimization.
 > Self-play (Launderer vs Defender) provides adversarial curriculum generation.
+> The entire ecosystem uses the **Qwen 2.5** model family for unified
+> tokenization and ChatML prompt formatting.
 
 ---
 
@@ -47,7 +49,7 @@ The Defender agent is trained using [GRPO (Group Relative Policy Optimization)](
 │     └── AMLEnvironment.reset() → initial alert observations    │
 │     └── Deterministic seed per prompt for R3 replay            │
 │                                                                 │
-│  2. Model: Meta-Llama-3.1-8B-Instruct (Unsloth 4-bit + LoRA)  │
+│  2. Model: Qwen2.5-7B-Instruct (Unsloth 4-bit + LoRA)        │
 │     └── Generates G=4 completions per prompt                   │
 │     └── Compute dtype: float16 (required by Unsloth 4-bit)     │
 │                                                                 │
@@ -78,11 +80,13 @@ Each prompt is generated with a deterministic seed (`scenario_seed = i * 7919 + 
 
 Unsloth's 4-bit quantization internally uses float16 as the BNB compute dtype. Using bfloat16 causes `RuntimeError: Half vs BFloat16` inside Unsloth's LoRA kernels. A100 handles fp16 natively with no performance penalty.
 
+> **Why Qwen 2.5?** We use the Qwen 2.5 family across the entire stack (7B for training, 1.5B for compaction, 72B for production inference) to ensure **unified ChatML prompt formatting** and **consistent tokenization**. This eliminates the tokenizer mismatch trap that occurs when mixing model families.
+
 ### Training on Colab / HF
 
 **Target:** A100 (40/80 GB VRAM) — recommended for production runs
 **Also works on:** L4 (24 GB), T4 (16 GB) with reduced batch sizes
-**Model:** `unsloth/Meta-Llama-3.1-8B-Instruct`
+**Model:** `unsloth/Qwen2.5-7B-Instruct`
 **Peak VRAM:** ~14 GB (4-bit + LoRA + G=4 generation)
 
 ### Colab Setup (Copy-Paste Cells)
@@ -152,7 +156,7 @@ import wandb
 wandb.login()
 
 !python train_grpo.py \
-    --model unsloth/Meta-Llama-3.1-8B-Instruct \
+    --model unsloth/Qwen2.5-7B-Instruct \
     --num-prompts 250 \
     --num-generations 4 \
     --lr 5e-6 \
@@ -227,7 +231,7 @@ print("✅ Model pushed to HuggingFace Hub!")
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `unsloth/Meta-Llama-3.1-8B-Instruct` | Base model |
+| `--model` | `unsloth/Qwen2.5-7B-Instruct` | Base model |
 | `--num-prompts` | `250` | Unique scenario prompts |
 | `--num-generations` | `4` | G — group size for GRPO |
 | `--lr` | `5e-6` | Learning rate |
@@ -316,7 +320,7 @@ Multi-step: scores **all unique** OS tool calls (deduplicated to prevent reward 
 
 | Component | VRAM |
 |-----------|------|
-| Base Llama 3.1 8B 4-bit (NF4) | ~5.5 GB |
+| Base Qwen 2.5 7B 4-bit (NF4) | ~5.0 GB |
 | LoRA adapters (r=16) | ~0.3 GB |
 | KV cache (G=4 × 1024 seq) | ~2.0 GB |
 | Optimizer (AdamW fp32) | ~1.2 GB |
@@ -442,7 +446,7 @@ python eval_harness.py --checkpoint checkpoints/defender-grpo-v2 --scenarios 1md
 python archive/train_dpo.py --base-model checkpoints/defender-grpo-v2 --db frontend/prisma/dev.db
 
 # Hot-swap adapters into running server
-python archive/hotswap.py --base unsloth/Meta-Llama-3.1-8B-Instruct --adapter checkpoints/dpo-latest
+python archive/hotswap.py --base unsloth/Qwen2.5-7B-Instruct --adapter checkpoints/dpo-latest
 ```
 
 ### Archived File Reference
@@ -465,7 +469,7 @@ The `agent_os_core/` directory contains the **production inference runtime** —
 
 | Aspect | GRPO Training (root) | AgentOS-Kernel (`agent_os_core/`) |
 |--------|---------------------|-----------------------------------|
-| Model | Llama 3.1 8B (4-bit LoRA) | Qwen2.5-72B-Instruct-AWQ (vLLM) |
+| Model | Qwen2.5-7B (4-bit LoRA) | Qwen2.5-72B-Instruct-AWQ (vLLM) |
 | Purpose | Learn investigative policies | Deploy trained policies at scale |
 | Memory | TRL handles context | 3-tier Cognitive Cache (L1/L2/L3) |
 | Tool execution | In-process Python | Rust/Tokio via PyO3 (GIL-bypass) |
