@@ -66,3 +66,6 @@ server.log
 *.node
 *.wasm
 *.exe
+
+# AgentOS-Kernel (requires bare-metal A100, not for HF Spaces)
+agent_os_core/

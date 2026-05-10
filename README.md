@@ -243,6 +243,18 @@ openenv push --ignore-file .hfignore
 ├── curriculum/
 │   ├── plr_engine.py            # Prioritized Level Replay
 │   └── oracle.py                # Proxy regret oracle
+│
+├── agent_os_core/               # ★ AgentOS-Kernel (production inference)
+│   ├── src/lib.rs               #   Rust Tokio runtime (PyO3 bindings)
+│   ├── Cargo.toml               #   Rust deps (pyo3, tokio, reqwest)
+│   ├── agent_os.py              #   Orchestrator (vLLM + Qwen2.5-72B-AWQ)
+│   ├── memory_manager.py        #   L1/L2 cognitive cache (Qwen2.5-1.5B)
+│   ├── l3_index.py              #   L3 LanceDB index (BGE embeddings)
+│   ├── test_integration.py      #   6-test end-to-end suite
+│   ├── test_memory.py           #   5-test L1/L2 suite
+│   ├── test_l3.py               #   5-test L3 suite
+│   └── test_runtime.py          #   Rust runtime unit tests
+│
 ├── frontend/                    # Next.js Glass Box Visualizer
 ├── assets/                      # WandB training curve screenshots
 ├── archive/                     # Legacy scripts (PPO, DPO, hotswap, validators)
@@ -252,6 +264,38 @@ openenv push --ignore-file .hfignore
 ├── Dockerfile                   # HF Spaces deployment
 ├── requirements.txt             # Runtime dependencies
 └── .hfignore                    # HF push exclusions
+```
+
+---
+
+## AgentOS-Kernel (`agent_os_core/`)
+
+Production inference middleware for long-context agentic reasoning on bare-metal GPU (A100 80GB). Solves **context starvation** — the [Lost in the Middle](https://arxiv.org/abs/2307.03172) problem where evidence gets buried in the attention dead zone.
+
+### Architecture
+
+| Component | Model | VRAM | Purpose |
+|---|---|---|---|
+| Reasoning Engine | Qwen2.5-72B-Instruct-AWQ (vLLM) | ~38 GB | JSON-constrained tool call generation |
+| Compaction Engine | Qwen2.5-1.5B-Instruct | ~3 GB | L1→L2 structured fact extraction |
+| Embedder | BAAI/bge-base-en-v1.5 | ~0.4 GB | L3 LanceDB vector indexing |
+| Reranker | BAAI/bge-reranker-v2-m3 | ~1.1 GB | Cross-encoder relevance gating |
+| Tool Runtime | Rust/Tokio via PyO3 | 0 | GIL-bypass concurrent tool execution |
+
+### 3-Tier Cognitive Cache
+
+- **L1** (6K tokens) — Sliding window of raw conversation turns
+- **L2** (2K tokens) — Structured scratchpad, compacted by LLM — injected at prompt start (high attention)
+- **L3** (unbounded) — LanceDB vector archive — gated retrieval injected at prompt end (high attention)
+
+### Quick Start
+
+```bash
+cd agent_os_core
+python -m venv .venv && source .venv/bin/activate
+pip install tiktoken lancedb numpy pyarrow maturin
+maturin develop --release          # Build Rust runtime
+python test_integration.py         # 16/16 tests pass (mock mode, no GPU)
 ```
 
 ---

@@ -78,3 +78,8 @@ validate-curl-*
 # Dev artifacts
 design-skills/
 .cursor/
+
+# Rust / Maturin build artifacts
+agent_os_core/target/
+agent_os_core/Cargo.lock
+agent_os_core/*.so
