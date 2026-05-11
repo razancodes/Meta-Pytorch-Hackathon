@@ -77,21 +77,21 @@ class GRPOTrainConfig:
 
     # GRPO
     num_generations: int = 4        # G — group size per prompt
-    max_completion_length: int = 1024
-    num_train_epochs: int = 3
+    max_completion_length: int = 2048
+    num_train_epochs: int = 2
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 8
-    learning_rate: float = 2e-5
-    beta: float = 0.01              # KL penalty (reduced from 0.04 — clip_ratio=0 in v1)
+    learning_rate: float = 5e-6
+    beta: float = 0.04              # KL penalty coefficient
     loss_type: str = "grpo"         # "grpo", "dapo", "dr_grpo"
     scale_rewards: bool = True
 
     # Dataset
-    num_prompts: int = 500          # Number of unique scenario prompts
+    num_prompts: int = 250          # Number of unique scenario prompts
     difficulties: list = field(default_factory=lambda: ["easy", "medium", "hard"])
 
     # Infrastructure
-    output_dir: str = "checkpoints/defender-grpo"
+    output_dir: str = "checkpoints/defender-grpo-v2"
     wandb_project: str = "memex-grpo"
     logging_steps: int = 1
     save_steps: int = 50
