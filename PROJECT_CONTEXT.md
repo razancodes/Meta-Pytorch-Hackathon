@@ -1,6 +1,7 @@
-# Memex OS-Agent Benchmark — Project Context
+# Memex — World Feedback for Financial Crime Detection
 
 > Complete technical reference for the Memex AML Investigation Environment.
+> **Research title:** *World Feedback for Financial Crime Detection: Outcome-Grounded Reward Signals for Long-Horizon AML Investigation Agent*
 > **Hackathon:** Meta / Hugging Face OpenEnv · **Team:** MuazTPM
 > **Unified Model Family:** Qwen 2.5 (7B training · 1.5B compaction · 72B inference)
 

@@ -499,6 +499,12 @@ def reward_environment_execution(completions, **kwargs) -> List[float]:
             task_id = task_ids[idx] if isinstance(task_ids, list) and idx < len(task_ids) else "easy"
 
             random.seed(seed)
+            # NOTE: The procedural generator uses a 70/30 suspicious/clean split.
+            # This ratio is critical for the Always-SAR trap:
+            #   E[R_always_SAR] = 0.7*1.0 + 0.3*(-0.75) = 0.475
+            #   E[R_reasonable] ≈ 0.68
+            # If this ratio drifts, the trap breaks. The generator's default
+            # clean_probability=0.30 MUST remain constant during training.
             env = AMLEnvironment()
             env.reset(task_id=task_id)
 
@@ -659,17 +665,24 @@ def train(cfg: GRPOTrainConfig) -> None:
     from datasets import Dataset
     dataset = Dataset.from_list(prompt_data)
 
-    reward_fns = [
-        reward_format_compliance,
-        reward_investigation_quality,
-        reward_environment_execution,
-        reward_os_mechanics,
-    ]
-    print(f"  ✓ {len(reward_fns)} reward functions registered:")
-    print("    R1: Format Compliance (prevents gibberish)")
-    print("    R2: Investigation Quality (prevents lazy tool choice)")
-    print("    R3: Environment Execution (ground-truth env reward)")
-    print("    R4: OS Mechanics (rewards memory/async/kernel usage)")
+    # Build reward function list — supports ablation via --disable-reward
+    _all_reward_fns = {
+        "R1": (reward_format_compliance, "Format Compliance (prevents gibberish)"),
+        "R2": (reward_investigation_quality, "Investigation Quality (prevents lazy tool choice)"),
+        "R3": (reward_environment_execution, "Environment Execution (ground-truth env reward)"),
+        "R4": (reward_os_mechanics, "OS Mechanics (rewards memory/async/kernel usage)"),
+    }
+    disabled = set(getattr(cfg, "disable_reward", []) or [])
+    reward_fns = []
+    for key, (fn, desc) in _all_reward_fns.items():
+        if key in disabled:
+            print(f"    {key}: {desc} — ⛔ DISABLED (ablation)")
+        else:
+            reward_fns.append(fn)
+            print(f"    {key}: {desc}")
+    print(f"  ✓ {len(reward_fns)}/{len(_all_reward_fns)} reward functions active")
+    if disabled:
+        print(f"  ⚠ Ablation mode: {', '.join(sorted(disabled))} disabled")
 
     # ── 4. Configure GRPOTrainer ────────────────────────────────────────
     print("\n▸ Configuring GRPOTrainer...")
@@ -845,9 +858,12 @@ def main():
     p.add_argument("--output-dir", default=GRPOTrainConfig.output_dir)
     p.add_argument("--dry-run", action="store_true",
                     help="Quick test: 4 prompts, 1 epoch, no WandB")
+    p.add_argument("--disable-reward", type=str, nargs="*", default=[],
+                    choices=["R1", "R2", "R3", "R4"],
+                    help="Disable specific reward functions for ablation study")
     args = p.parse_args()
 
-    train(GRPOTrainConfig(
+    cfg = GRPOTrainConfig(
         model_name=args.model,
         learning_rate=args.lr,
         lora_r=args.lora_r,
@@ -862,7 +878,10 @@ def main():
         wandb_project=args.wandb_project,
         output_dir=args.output_dir,
         dry_run=args.dry_run,
-    ))
+    )
+    # Attach ablation config (not a dataclass field to avoid breaking existing configs)
+    cfg.disable_reward = args.disable_reward
+    train(cfg)
 
 
 if __name__ == "__main__":

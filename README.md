@@ -9,11 +9,11 @@ app_port: 7860
 
 <div align="center">
 
-# 🧠 Memex: The OS-Agent Benchmark
+# 🧠 Memex: World Feedback for Financial Crime Detection
 
-### *Can an LLM run its own Operating System?*
+### *Outcome-Grounded Reward Signals for Long-Horizon AML Investigation Agent*
 
-**A POMDP environment where language models manage Virtual Memory, handle Interrupts, and self-update their Kernel — all while solving $274B-scale financial crimes.**
+**A POMDP environment where language models manage Virtual Memory, handle Interrupts, and self-update their Kernel — trained via outcome-grounded world feedback from a procedurally generated OS-agent benchmark.**
 
 [![OpenEnv](https://img.shields.io/badge/OpenEnv-Compatible-blue)](https://github.com/openenv/openenv)
 [![HF Space](https://img.shields.io/badge/🤗-Live%20Demo-yellow)](https://huggingface.co/spaces/MuazTPM/aml_investigation_env)

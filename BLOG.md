@@ -1,4 +1,4 @@
-# Memex: Teaching an LLM to Run Its Own Operating System While Investigating Serious Financial Crime
+# World Feedback for Financial Crime Detection: Teaching an LLM to Operate Its Own OS While Investigating Serious Financial Crime
 
 ## The Problem
 

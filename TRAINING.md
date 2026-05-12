@@ -1,6 +1,7 @@
-# Memex Training Guide
+# Memex Training Guide — World Feedback for Financial Crime Detection
 
 > Complete training pipeline for the Memex OS-Agent Benchmark.
+> **Research title:** *World Feedback for Financial Crime Detection: Outcome-Grounded Reward Signals for Long-Horizon AML Investigation Agent*
 > **GRPO** (TRL + Unsloth) is the **primary training path** — the Defender agent
 > learns to investigate AML alerts using Group Relative Policy Optimization.
 > Self-play (Launderer vs Defender) provides adversarial curriculum generation.

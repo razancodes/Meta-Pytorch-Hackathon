@@ -239,7 +239,14 @@ class AMLGrader:
             true_positives = len(flagged_set & gt_entities)
             precision = true_positives / max(len(flagged_set), 1)
             recall = true_positives / len(gt_entities)
-            f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+            # Precision floor: reject bulk-flagging / recall-maximizing strategies.
+            # An agent flagging >4× ground-truth entity count gets F1=0.
+            # This closes the reward-hacking vector where agents spam all
+            # encountered entity IDs to guarantee non-zero recall.
+            if precision < 0.25:
+                f1 = 0.0
+            else:
+                f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
         elif not is_suspicious:
             # Clean scenario: no entities to flag. F1 = 1.0 if agent flagged nothing.
             f1 = 1.0 if len(flagged_set) == 0 else 0.0
