@@ -249,6 +249,53 @@ print("✅ Model pushed to HuggingFace Hub!")
 
 ---
 
+## ★ Workshop Experiments (GPU Server Required)
+
+As detailed in the `paper_context.md` submission blueprint, the following two experiments must be executed on a GPU-enabled server (A100 recommended) to generate the empirical results required for the ICML submission. They validate the "World Feedback" architecture against standard RL tuning methods.
+
+### Experiment 3: GRPO Reward Ablation
+
+This experiment measures the independent contribution of each decomposed reward function. You must train 4 distinct models using identical hyperparameter seeds to isolate the effects of the shaping signals.
+
+Run the following commands sequentially on your GPU server. Each run will take approximately 3-5 hours on an A100.
+
+```bash
+# 1. Full Condition (Baseline — All rewards enabled)
+python train_grpo.py --output-dir checkpoints/exp3-full --num-prompts 250 --epochs 2
+
+# 2. No-OS Condition (Ablates R4: OS Mechanics)
+# Tests if the agent can discover OS tools via random exploration alone
+python train_grpo.py --output-dir checkpoints/exp3-no-os --num-prompts 250 --epochs 2 --disable-reward R4
+
+# 3. Terminal-Only Condition (Ablates R1, R2, R4)
+# Simulates standard sparse-reward RL (rewarded only at the end of the episode)
+python train_grpo.py --output-dir checkpoints/exp3-terminal --num-prompts 250 --epochs 2 --disable-reward R1 R2 R4
+
+# 4. Format-Only Condition (Ablates R3, R4)
+# Negative control. Agent is only rewarded for valid JSON, oblivious to the environment
+python train_grpo.py --output-dir checkpoints/exp3-format --num-prompts 250 --epochs 2 --disable-reward R3 R4
+```
+
+*Note: Once these four checkpoints are trained, evaluate them locally using `eval_harness.py` to construct Table 2 in the paper.*
+
+### Experiment 4: Adversarial Self-Play Curriculum
+
+This experiment tests the transition from static procedural generation to a competitive two-agent dynamic. The `self_play.py` script alternatingly trains the Defender to catch laundering and the Launderer to generate evasive transaction graphs that successfully bypass the Defender's logic.
+
+*Warning: This requires loading both models into VRAM simultaneously. Monitor your memory usage closely.*
+
+```bash
+# Run 3 alternating rounds (Launderer generation → Defender update)
+python self_play.py \
+    --defender-model unsloth/Qwen2.5-7B-Instruct \
+    --launderer-model unsloth/Qwen2.5-7B-Instruct \
+    --outer-rounds 3 \
+    --defender-warmup 20 \
+    --wandb-project memex-selfplay
+```
+
+---
+
 ## Decomposed Reward Functions (Anti-Gaming Design)
 
 We pass **4 independent reward functions** to `GRPOTrainer`. TRL sums them for the final reward per completion. This makes reward hacking much harder — gaming one signal doesn't help if the others penalize the degenerate behavior.

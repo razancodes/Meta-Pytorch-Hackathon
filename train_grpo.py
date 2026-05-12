@@ -534,20 +534,26 @@ def reward_environment_execution(completions, **kwargs) -> List[float]:
 def reward_os_mechanics(completions, **kwargs) -> List[float]:
     """R4: OS Mechanics — Does the agent leverage OS-inspired features?
 
-    Multi-step scoring: Evaluates ALL tool calls in the completion to
-    detect usage of OS-mechanic tools anywhere in the investigation.
+    Outcome-Conditioned Gating: Prevents OS mechanic farming. The agent
+    must reach the correct terminal action to receive any OS rewards.
 
-    Scoring (per unique OS tool used):
+    Scoring (per unique OS tool used, if decision is correct):
         +0.3   write_to_case_file with non-empty content
         +0.3   search_compliance_manual with non-empty query
-        +0.2   update_system_prompt with non-empty rule (kernel meta-prompting)
+        +0.2   update_system_prompt with non-empty rule
         +0.2   request_wire_trace (async job scheduling)
         +0.1   retrieve_async_result (interrupt handling)
         -0.1   OS tool with empty/invalid content (gaming attempt)
-         0.0   No OS tools used (neutral)
+         0.0   No OS tools used OR wrong terminal action
     """
+    from server.aml_environment import AMLEnvironment
+    import random
+
     rewards = []
-    for completion in completions:
+    scenario_seeds = kwargs.get("scenario_seed", [])
+    task_ids = kwargs.get("task_id", [])
+
+    for idx, completion in enumerate(completions):
         text = _extract_completion_text(completion)
         all_calls = parse_all_tool_calls(text)
 
@@ -555,6 +561,7 @@ def reward_os_mechanics(completions, **kwargs) -> List[float]:
             rewards.append(0.0)
             continue
 
+        # 1. Compute raw OS mechanic score
         score = 0.0
         seen_tools = set()
 
@@ -588,6 +595,42 @@ def reward_os_mechanics(completions, **kwargs) -> List[float]:
                 score += 0.2
             elif tool == "retrieve_async_result":
                 score += 0.1
+
+        # 2. Outcome-Conditioned Gating
+        if score > 0.0:
+            try:
+                # Re-create environment just to get ground truth
+                seed = scenario_seeds[idx] if isinstance(scenario_seeds, list) and idx < len(scenario_seeds) else 42
+                task_id = task_ids[idx] if isinstance(task_ids, list) and idx < len(task_ids) else "easy"
+                
+                random.seed(seed)
+                env = AMLEnvironment()
+                env.reset(task_id=task_id)
+                # Safely access ground truth
+                gt = env._scenario.ground_truth if hasattr(env._scenario, "ground_truth") else {}
+                is_suspicious = gt.get("is_suspicious", True) if isinstance(gt, dict) else True
+
+                # Check terminal action in completion
+                terminal_action = None
+                for call in all_calls:
+                    tool = call.get("tool", "").strip().lower()
+                    if tool in {"file_sar", "close_alert"}:
+                        terminal_action = tool
+                        break
+                
+                is_correct = False
+                if terminal_action == "file_sar" and is_suspicious:
+                    is_correct = True
+                elif terminal_action == "close_alert" and not is_suspicious:
+                    is_correct = True
+                
+                # Zero out reward if outcome is incorrect or missing
+                if not is_correct:
+                    score = 0.0
+
+            except Exception as e:
+                print(f"  ⚠ R4 env error (completion {idx}): {type(e).__name__}: {e}")
+                score = 0.0
 
         rewards.append(score)
 
