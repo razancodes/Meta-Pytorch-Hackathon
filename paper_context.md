@@ -17,7 +17,7 @@
 We show that AML investigation is a natural world-feedback RL problem where outcome-grounded signals — financial crime detection accuracy, computational resource efficiency, and regulatory compliance — computed entirely from environment state (zero human labels) train LLM agents that generalize across money laundering typologies and exhibit emergent OS-aware investigation behaviors.
 
 ### Abstract Template (150 words — fill in X, Y, Z from experiments)
-Reinforcement Learning from Human Feedback (RLHF) relies on human preference signals that are expensive, subjective, and impossible to scale in high-stakes forensic domains. We present Memex, an OS-augmented multi-agent RL environment for Anti-Money Laundering (AML) investigation, where all reward signals are derived from measurable world outcomes: financial crime detection accuracy (economic outcome), memory management efficiency (resource signal), and temporal coordination (latency signal). The environment formalizes AML investigation as a POMDP with 18 tools across 3 typologies and 3 difficulty levels, with a procedural scenario generator that prevents memorization. We train a Qwen2.5-7B Defender agent via GRPO on this heterogeneous world feedback and show: (1) removing OS world feedback reduces detection F1 by X% on hard typologies; (2) the trained agent achieves Y% SAR F1 vs. Z% for zero-shot GPT-4o-mini, with 3× higher OS mechanics adoption; (3) fixed hacking policies score E[R] ≤ 0.52 vs. E[R] ≈ 0.68 for the trained agent, confirming the reward is not trivially gameable. Code and demo: [anonymized].
+Reinforcement Learning from Human Feedback (RLHF) relies on human preference signals that are expensive, subjective, and impossible to scale in high-stakes forensic domains. We present Memex, an OS-augmented multi-agent RL environment for Anti-Money Laundering (AML) investigation, where all reward signals are derived from measurable world outcomes: financial crime detection accuracy (economic outcome), memory management efficiency (resource signal), and temporal coordination (latency signal). The environment formalizes AML investigation as a POMDP with 18 tools across 3 typologies and 3 difficulty levels, with a procedural scenario generator that prevents memorization. We train a Qwen2.5-7B Defender agent via GRPO on this heterogeneous world feedback and show: (1) removing OS world feedback reduces detection F1 by X% on hard typologies; (2) the trained agent achieves Y% SAR F1 vs. Z% for zero-shot Qwen2.5-7B-Instruct, with 3× higher OS mechanics adoption; (3) fixed hacking policies score E[R] ≤ 0.52 vs. E[R] ≈ 0.68 for the trained agent, confirming the reward is not trivially gameable. Code and demo: [anonymized].
 
 ---
 
@@ -182,19 +182,19 @@ Table structure:
 | No OS feedback (R1+R2+R3) | No R4 | X | X | X | X | X |
 | Terminal only (R3) | R3 only | X | X | X | X | X |
 | Format only (R1+R2) | No env | X | X | X | X | X |
-| Zero-shot GPT-4o-mini | No training | X | X | X | X | X |
+| Zero-shot Qwen2.5-7B-Instruct | No training | X | X | X | X | X |
 
 Fill X values from experiments. Expected pattern:
 - Full > No-OS on hard TBML (OS mechanics matter most for complex typologies)
 - No-OS > Terminal-only (dense intermediate signals accelerate learning)
-- Trained 7B < GPT-4o-mini on raw detection accuracy (acceptable — different model sizes)
-- Trained 7B >> GPT-4o-mini on OS mechanics adoption (proof that world feedback teaches behaviors impossible zero-shot)
+- Trained 7B < Qwen2.5-7B-Instruct on raw detection accuracy (acceptable — different model sizes)
+- Trained 7B >> Qwen2.5-7B-Instruct on OS mechanics adoption (proof that world feedback teaches behaviors impossible zero-shot)
 - Page fault rate: Full condition lowest (agent learned memory management)
 
 How to interpret if ablation goes wrong:
 - If Full ≈ No-OS: OS mechanics don't help detection — reframe as "OS mechanics teach efficiency without hurting accuracy" — still a valid claim
 - If Terminal-only beats Full: R4 is adding noise — implement outcome-conditioned gating, re-run
-- If trained 7B << GPT-4o-mini on everything: focus paper on environment design and reward taxonomy as contribution, not training results
+- If trained 7B << Qwen2.5-7B-Instruct on everything: focus paper on environment design and reward taxonomy as contribution, not training results
 
 #### Subsection 4.4: Reward Hacking Probing (Run Before Thursday — CPU Only)
 
@@ -270,14 +270,14 @@ Gradient-trained adversarial self-play with diversity constraints to prevent mod
 ## PART 2: REQUIRED EXPERIMENTS — EXECUTION PLAN
 
 ### Experiment 1: Zero-Shot Baseline (MUST HAVE)
-**What**: Run inference.py with GPT-4o-mini via OpenAI API on 9 eval scenarios (3 typologies × 3 difficulties × 3 runs each = 27 episodes total)
+**What**: Run inference.py with Qwen2.5-7B-Instruct via OpenAI API on 9 eval scenarios (3 typologies × 3 difficulties × 3 runs each = 27 episodes total)
 **Time**: 1 hour, ~$2–3 API cost
 **When**: Tonight (Tuesday)
 **How to run**:
 ```bash
-export API_BASE_URL="https://api.openai.com/v1"
-export MODEL_NAME="gpt-4o-mini"
-export AML_ENV_URL="http://localhost:8000"
+export API_BASE_URL="https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct/v1"
+export MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
+export HF_TOKEN="your_hf_token"
 uvicorn openenv_server:app --host 0.0.0.0 --port 8000 &
 python inference.py --task easy --runs 3
 python inference.py --task medium --runs 3
@@ -286,8 +286,8 @@ python inference.py --task hard --runs 3
 **What to log**: SAR F1 (precision/recall), entity F1, typology accuracy, page fault count, OS tool usage count, steps per episode, terminal reward
 
 **How to interpret**:
-- GPT-4o-mini will likely never use OS tools (write_to_case_file, request_wire_trace) zero-shot — this is the key gap your trained model fills
-- GPT-4o-mini may have higher raw detection accuracy (it's a much larger model) — this is fine and expected
+- Qwen2.5-7B-Instruct will likely never use OS tools (write_to_case_file, request_wire_trace) zero-shot — this is the key gap your trained model fills
+- Qwen2.5-7B-Instruct may have higher raw detection accuracy (it's a much larger model) — this is fine and expected
 - The OS tool adoption gap is your primary argument: world feedback teaches behaviors impossible zero-shot
 
 ### Experiment 2: Reward Hacking Probing (MUST HAVE)
@@ -410,7 +410,7 @@ python self_play.py --defender-gpu 0 --launderer-gpu 1 --steps 50 --launderer-mo
 
 ### Figure 4 (OS tool adoption comparison — from Experiments 1+3)
 **Type**: Horizontal bar chart
-- Y-axis: Models (Zero-shot GPT-4o-mini, Format-only, No-OS, Full trained)
+- Y-axis: Models (Zero-shot Qwen2.5-7B-Instruct, Format-only, No-OS, Full trained)
 - X-axis: OS tool adoption rate (unique OS tools per episode / 5)
 **Caption**: "OS mechanics adoption rate. Zero-shot models exhibit near-zero OS tool usage; world feedback training produces consistent adoption of all three mechanic families."
 **Where**: Section 4.3
@@ -487,7 +487,7 @@ Remove all of the following from the paper — mention only in footnotes or futu
 | Time | Task |
 |---|---|
 | 17:00–18:00 | Implement fixed hacking policies + run eval (CPU) |
-| 18:00–19:00 | Run zero-shot GPT-4o-mini baseline via inference.py (9 scenarios) |
+| 18:00–19:00 | Run zero-shot Qwen2.5-7B-Instruct baseline via inference.py (9 scenarios) |
 | 19:00–19:30 | Add outcome-conditioned R4 gating to grader.py |
 | 19:30–20:00 | Configure training run: LoRA r=8, G=2, β=0.08, 100 steps, mock mode |
 | 20:00– | Start overnight training (all 4 ablation conditions sequentially on GPU 0) |
